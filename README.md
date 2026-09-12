@@ -4,9 +4,17 @@
 
 Enter your Letterboxd username and Friendboxd quietly reads your friends' public watchlists, figures out whose taste is closest to yours, and serves up a personalized slate of recommendations — complete with synopses, taglines, directors, and runtimes pulled straight from Letterboxd.
 
-> Built by [Mahesh](https://github.com/NMahesh20/Friendboxd) × AI — 2026
+> Built by [Mahesh](https://github.com/NMahesh20/Friendboxd) × AI
 
 ---
+## 📝 Note
+
+The datacenter IP where the website is hosted are blocked from accessing Letterboxd :( hence use the below docker way
+
+```bash
+docker pull oblivion2098/friendboxd:latest   # full (with stealth-browser fallback)
+docker run --rm -d -p 3000:3000 oblivion2098/friendboxd:latest
+```
 
 ## ✨ Features
 
@@ -205,7 +213,7 @@ docker compose up --build
 
 ```bash
 docker pull oblivion2098/friendboxd:latest   # full (with stealth-browser fallback)
-docker pull oblivion2098/friendboxd:light    # lightweight (HTTP-only)
+docker run --rm -d -p 3000:3000 oblivion2098/friendboxd:latest
 ```
 
 **Publish to Docker Hub (CI):**
