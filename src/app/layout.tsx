@@ -19,6 +19,10 @@ export const metadata: Metadata = {
   title: 'Friendboxd — Movie picks from your friends',
   description:
     'Enter your Letterboxd username and get movie recommendations tuned to what your friends have watched and loved.',
+  icons: {
+    icon: '/icon.png',
+    apple: '/icon.png',
+  },
 };
 
 export const viewport: Viewport = {
