@@ -210,12 +210,7 @@ docker pull oblivion2098/friendboxd:light    # lightweight (HTTP-only)
 
 **Publish to Docker Hub (CI):**
 
-The repo ships a GitHub Actions workflow (`.github/workflows/docker-publish.yml`) that builds **both** images and pushes them to Docker Hub on every push to `main` (and on `v*` tags, which also get versioned tags). To enable it, add two repository secrets:
-
-| Secret | Value |
-| --- | --- |
-| `DOCKERHUB_USERNAME` | your Docker Hub username |
-| `DOCKERHUB_TOKEN` | a Docker Hub access token with read/write scope |
+The repo ships a GitHub Actions workflow (`.github/workflows/docker-publish.yml`) that builds **both** images and pushes them to Docker Hub on version tags plain `0.1.0`.
 
 Tagging scheme:
 

@@ -8,16 +8,20 @@
 #   DOCKERHUB_TOKEN     — Docker Hub access token (read/write)
 #
 # Triggers:
-#   - push to main            → latest, full, light
-#   - push a v* tag           → latest, full, light + <version>, <version>-light
+#   - push a version tag      → latest, full, light + <version>, <version>-light
+#     (matches both "v0.1.0" and plain "0.1.0")
 #   - manual (workflow_dispatch)
 
 name: Build & Push Docker Images
 
+# Show the release version in the run name (e.g. "Build & Push Docker Images (0.1.0)").
+run-name: ${{ github.ref_type == 'tag' && format('Build & Push Docker Images ({0})', replace(github.ref_name, 'v', '')) || 'Build & Push Docker Images' }}
+
 on:
   push:
-    branches: [main]
-    tags: ['v*']
+    # branches: [main]
+    # Match plain "0.1.0" release tags.
+    tags: ['[0-9]*']
   workflow_dispatch:
 
 env:
