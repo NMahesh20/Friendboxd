@@ -8,6 +8,7 @@ import type { AnyNode } from 'domhandler';
 import { crawlerConfig } from '@/lib/config';
 import { fetchHtml, HttpFetchError } from './http';
 import { fetchHtmlStealth } from './browser';
+import { rateLimiter } from './rate-limiter';
 import type { Film, Friend } from '@/lib/types';
 
 const BASE = 'https://letterboxd.com';
@@ -21,6 +22,8 @@ export interface CrawlOptions {
   maxFriends?: number;
   /** Max pagination pages per collection. */
   maxPages?: number;
+  /** Max pages for the user's OWN watchlist (exclusion set). */
+  maxUserPages?: number;
   /** Collect lists + reviews too (slower). */
   deep?: boolean;
 }
@@ -49,6 +52,9 @@ export class PrivateProfileError extends Error {
 // ─── HTML fetching with stealth fallback ────────────────────────────────
 
 async function getHtml(url: string, referer?: string): Promise<string> {
+  // Polite rate limit — at most `rateMax` requests per `rateWindowMs`
+  // (default 2 per 10s). Applies to both HTTP and browser strategies.
+  await rateLimiter.acquire();
   const mode = crawlerConfig.mode;
   if (mode === 'browser') {
     const html = await fetchHtmlStealth(url);
@@ -379,6 +385,9 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
   const maxPages = opts.maxPages ?? crawlerConfig.maxPages;
   const maxFilms = opts.maxFilms ?? crawlerConfig.maxFilms;
   const maxFriends = opts.maxFriends ?? crawlerConfig.maxFriends;
+  // The user's own watchlist is crawled deeper than friends' so the
+  // "already watched" exclusion set is as complete as possible.
+  const maxUserPages = opts.maxUserPages ?? crawlerConfig.maxUserPages;
   const warnings: string[] = [];
 
   // 1. Profile
@@ -419,13 +428,14 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
     console.warn('[crawler] following failed:', (err as Error).message);
   }
 
-  // 3. User's own films (for overlap scoring + exclusion).
+  // 3. User's own films (for overlap scoring + exclusion). Crawled deeper
+  //    than friends' lists so recommendations never include watched films.
   let userFilms: Film[] = [];
   try {
     userFilms = await collectPaginated(
       (p) => `${BASE}/${username}/films/page/${p}/`,
       parseFilmsPage,
-      maxPages,
+      maxUserPages,
       `${BASE}/${username}/`,
     );
   } catch (err) {

@@ -1,0 +1,28 @@
+# ─── Docker build context exclusions ────────────────────────────────────
+# Keep the build context small and never bake local state/secrets into the
+# image. The builder stage only needs source + config + lockfile.
+
+# Dependencies / build output
+node_modules
+.next
+.cache
+
+# VCS
+.git
+.gitignore
+
+# Local env / secrets (never bake into the image)
+.env
+.env.local
+.env*.local
+
+# Docs & tooling not needed at build time
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+vercel.json
+scripts
+tsconfig.tsbuildinfo
+next-env.d.ts
+*.log

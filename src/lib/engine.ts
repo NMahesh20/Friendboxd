@@ -146,8 +146,20 @@ export async function recommendMovies(
 
   const degraded = aiCandidates.length < 3;
 
+  // Hard guarantee: never recommend a film the user has already watched.
+  // Candidates are already excluded during generation; this is a final
+  // safety net (matches by slug, with a title+year fallback).
+  const watchedSlugs = new Set(user.films.map((f) => f.slug));
+  const watchedKeys = new Set(
+    user.films.map((f) => `${f.title.toLowerCase()}|${f.year ?? ''}`),
+  );
+  const unseen = aiCandidates.filter((c) => {
+    if (watchedSlugs.has(c.film.slug)) return false;
+    return !watchedKeys.has(`${c.film.title.toLowerCase()}|${c.film.year ?? ''}`);
+  });
+
   return {
-    candidates: aiCandidates.slice(0, RECOMMENDATION_COUNT),
+    candidates: unseen.slice(0, RECOMMENDATION_COUNT),
     genre: genreMood,
     generatedAt: new Date().toISOString(),
     aiUsed,

@@ -7,6 +7,12 @@ export interface CrawlerConfig {
   timeoutMs: number;
   maxFilms: number;
   maxFriends: number;
+  /** Max pages crawled for the user's OWN watchlist (exclusion set). */
+  maxUserPages: number;
+  /** Max requests allowed per sliding window (rate limiter). */
+  rateMax: number;
+  /** Sliding window length in ms (rate limiter). */
+  rateWindowMs: number;
 }
 
 export interface AiConfig {
@@ -49,6 +55,12 @@ export const crawlerConfig: CrawlerConfig = {
   timeoutMs: int(process.env.CRAWLER_TIMEOUT_MS, isVercel ? 15000 : 20000),
   maxFilms: int(process.env.CRAWLER_MAX_FILMS, isVercel ? 120 : 200),
   maxFriends: int(process.env.CRAWLER_MAX_FRIENDS, isVercel ? 15 : 20),
+  // The user's own watchlist is the exclusion set, so crawl it deeper
+  // than friends' lists to avoid recommending already-watched films.
+  maxUserPages: int(process.env.CRAWLER_MAX_USER_PAGES, isVercel ? 4 : 8),
+  // Polite rate limit: 2 requests per 10s by default.
+  rateMax: int(process.env.CRAWLER_RATE_MAX, 2),
+  rateWindowMs: int(process.env.CRAWLER_RATE_WINDOW_MS, 10000),
 };
 
 export const aiConfig: AiConfig = {

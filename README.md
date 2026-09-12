@@ -33,7 +33,7 @@ Browser (React)  →  Next.js API routes  →  Crawler  →  Scoring engine  →
 ```
 
 ### 1. Crawler (`src/lib/crawler/`)
-Fetches Letterboxd pages with realistic browser fingerprints (rotated User-Agent, matching `sec-ch-ua*` client hints, varied Accept-Language) and polite throttling. Supports optional HTTP proxy rotation via `PROXY_POOL` — when multiple proxies are configured, each retry rotates to a different one. When Letterboxd responds with 403/429 or a challenge page, it falls back to a headless Chromium browser via Playwright. Parsers are written defensively with fallback selectors so small Letterboxd UI changes don't break them. Responses are cached to disk (1h TTL) to avoid hammering the site.
+Fetches Letterboxd pages with realistic browser fingerprints (rotated User-Agent, matching `sec-ch-ua*` client hints, varied Accept-Language) and polite throttling. A **sliding-window rate limiter** caps requests at 2 per 10 seconds by default (tunable via `CRAWLER_RATE_MAX` / `CRAWLER_RATE_WINDOW_MS`). Supports optional HTTP proxy rotation via `PROXY_POOL` — when multiple proxies are configured, each retry rotates to a different one. When Letterboxd responds with 403/429 or a challenge page, it falls back to a headless Chromium browser via Playwright. Parsers are written defensively with fallback selectors so small Letterboxd UI changes don't break them. Responses are cached to disk (1h TTL) to avoid hammering the site.
 
 ### 2. Taste matching (`src/lib/scoring/taste-match.ts`)
 Compares your films against each friend's using weighted signals:
@@ -104,6 +104,9 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 | `CRAWLER_TIMEOUT_MS` | `20000` | Per-request timeout. |
 | `CRAWLER_MAX_FILMS` | `200` | Max films considered per profile. |
 | `CRAWLER_MAX_FRIENDS` | `20` | Max friends discovered. |
+| `CRAWLER_MAX_USER_PAGES` | `8` | Pages crawled for the user's own watchlist (exclusion set). |
+| `CRAWLER_RATE_MAX` | `2` | Max requests per sliding window (rate limiter). |
+| `CRAWLER_RATE_WINDOW_MS` | `10000` | Rate-limiter window length (10s). |
 | `CACHE_DIR` | `.cache` | Crawl cache directory. |
 | `CACHE_TTL_MS` | `3600000` | Cache lifetime (1h). |
 | `PROXY_POOL` | — | Comma-separated proxy URLs (`http://user:pass@host:port`). |
@@ -146,17 +149,60 @@ npm run build
 npm run start
 ```
 
-Or with Docker:
+### 🐳 Docker (optimized)
 
-```dockerfile
-FROM node:22-slim
-RUN npx playwright install --with-deps chromium
-WORKDIR /app
-COPY . .
-RUN npm ci && npm run build
-EXPOSE 3000
-CMD ["npm", "run", "start"]
+The repo ships a multi-stage `Dockerfile` that uses Next.js `output: 'standalone'` — the runtime image contains **only the traced server + static assets** (no source, no dev dependencies). It runs as a non-root user and includes a healthcheck.
+
+**Build & run (default — with the stealth-browser crawl fallback, ~1.7 GB):**
+
+```bash
+docker build -t friendboxd .
+docker run --rm -p 3000:3000 friendboxd
 ```
+
+**Lightweight HTTP-only variant (smaller, ~290 MB):**
+
+```bash
+docker build --build-arg INSTALL_BROWSER=0 -t friendboxd:light .
+docker run --rm -p 3000:3000 -e CRAWLER_MODE=http friendboxd:light
+```
+
+**With the AI layer:**
+
+```bash
+docker run --rm -p 3000:3000 -e OPENAI_API_KEY=sk-... friendboxd
+```
+
+**Or with Docker Compose:**
+
+```bash
+docker compose up --build
+```
+
+> **Note:** the default image ships Chromium and runs in `CRAWLER_MODE=auto`, so it can fall back to a stealth browser when Letterboxd blocks plain HTTP. For the lean HTTP-only image, build with `INSTALL_BROWSER=0` + `CRAWLER_MODE=http`. All env vars from the [Configuration](#-configuration) table can be passed with `-e`.
+
+**Pull from Docker Hub:**
+
+```bash
+docker pull oblivion2098/friendboxd:latest   # full (with stealth-browser fallback)
+docker pull oblivion2098/friendboxd:light    # lightweight (HTTP-only)
+```
+
+**Publish to Docker Hub (CI):**
+
+The repo ships a GitHub Actions workflow (`.github/workflows/docker-publish.yml`) that builds **both** images and pushes them to Docker Hub on every push to `main` (and on `v*` tags, which also get versioned tags). To enable it, add two repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | your Docker Hub username |
+| `DOCKERHUB_TOKEN` | a Docker Hub access token with read/write scope |
+
+Tagging scheme:
+
+| Image | Tags |
+| --- | --- |
+| Full (default, with browser) | `latest`, `full`, `<version>` on tags |
+| Lightweight (HTTP-only) | `light`, `<version>-light` on tags |
 
 ---
 
