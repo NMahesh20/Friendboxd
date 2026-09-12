@@ -9,6 +9,46 @@ import { resolveMood } from '@/lib/utils/genres';
 import { normalizeGenre } from '@/lib/utils/genres';
 import { CANDIDATE_POOL_SIZE } from '@/lib/config';
 
+/**
+ * Compute how relevant a film is to the selected genre/mood (0–1).
+ * 0 = no match, 0.5 = partial overlap, 0.7 = keyword match, 1 = exact genre.
+ * Returns 0.5 (neutral) when no genre/mood filter is active.
+ *
+ * Shared by candidate generation (soft boost) and the post-enrichment
+ * hard filter, so both use the exact same matching rules.
+ */
+export function computeGenreRelevance(film: Film, genreMood: string): number {
+  const { genres, keywords } = resolveMood(genreMood);
+  const normalizedGenres = new Set(genres.map(normalizeGenre));
+  const keywordLower = keywords.map((k) => k.toLowerCase());
+
+  if (normalizedGenres.size === 0 && keywordLower.length === 0) {
+    return 0.5; // neutral when no genre filter
+  }
+
+  const filmGenres = new Set(film.genres.map(normalizeGenre));
+  let relevance = 0;
+
+  // Exact genre match.
+  for (const g of normalizedGenres) {
+    if (filmGenres.has(g)) relevance = 1;
+  }
+  // Keyword match against title.
+  const titleLower = film.title.toLowerCase();
+  for (const kw of keywordLower) {
+    if (titleLower.includes(kw)) relevance = Math.max(relevance, 0.7);
+  }
+  // Partial genre overlap.
+  if (relevance === 0) {
+    for (const fg of filmGenres) {
+      for (const g of normalizedGenres) {
+        if (fg.includes(g) || g.includes(fg)) relevance = Math.max(relevance, 0.5);
+      }
+    }
+  }
+  return relevance;
+}
+
 /** Compute candidate movies from friends' filmographies. */
 export function generateCandidates(
   selectedFriends: {
@@ -22,10 +62,7 @@ export function generateCandidates(
   userWatched: Film[],
   genreMood: string,
 ): CandidateMovie[] {
-  const { genres, keywords } = resolveMood(genreMood);
-  const normalizedGenres = new Set(genres.map(normalizeGenre));
   const excludeSlugs = new Set(userWatched.map((f) => f.slug));
-  const keywordLower = keywords.map((k) => k.toLowerCase());
 
   // Aggregate scores per film slug.
   const filmMap = new Map<
@@ -55,31 +92,10 @@ export function generateCandidates(
         ? Math.max(0.5, 1 - (Date.now() - new Date(film.watchedAt).getTime()) / (365 * 24 * 60 * 60 * 1000) * 0.3)
         : 0.6;
 
-      // Genre relevance.
-      let genreRelevance = 0;
-      if (normalizedGenres.size > 0 || keywordLower.length > 0) {
-        const filmGenres = new Set(film.genres.map(normalizeGenre));
-        for (const g of normalizedGenres) {
-          if (filmGenres.has(g)) genreRelevance = 1;
-        }
-        // Keyword matching against title.
-        const titleLower = film.title.toLowerCase();
-        for (const kw of keywordLower) {
-          if (titleLower.includes(kw)) genreRelevance = Math.max(genreRelevance, 0.7);
-        }
-        // Partial genre overlap.
-        if (genreRelevance === 0) {
-          for (const fg of filmGenres) {
-            for (const g of normalizedGenres) {
-              if (fg.includes(g) || g.includes(fg)) genreRelevance = Math.max(genreRelevance, 0.5);
-            }
-          }
-        }
-      } else {
-        genreRelevance = 0.5; // neutral when no genre filter
-      }
-
-      const baseScore = fScore * fRating * watchRecencyBoost * (0.4 + genreRelevance * 0.6);
+      // Genre relevance (0–1). The boost is strong so genre-matching films
+      // dominate the pool and unrelated genres are pushed out.
+      const genreRelevance = computeGenreRelevance(film, genreMood);
+      const baseScore = fScore * fRating * watchRecencyBoost * (0.15 + genreRelevance * 0.85);
       const influence: Influence = {
         friendId: friend.id,
         friendName: friend.name,

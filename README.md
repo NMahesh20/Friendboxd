@@ -21,6 +21,26 @@ Enter your Letterboxd username and Friendboxd quietly reads your friends' public
 
 ---
 
+## 📸 Screenshots
+
+**1. Enter your Letterboxd username**
+
+<img src="images/1.png" alt="Step 1 — Enter your Letterboxd username" width="700" />
+
+**2. Pick your friends**
+
+<img src="images/2.png" alt="Step 2 — Pick your friends" width="700" />
+
+**3. Choose a genre or mood**
+
+<img src="images/3.png" alt="Step 3 — Choose a genre or mood" width="700" />
+
+**4. Get your picks**
+
+<img src="images/4.png" alt="Step 4 — Get your picks" width="700" />
+
+---
+
 ## 🧠 How it works
 
 ```

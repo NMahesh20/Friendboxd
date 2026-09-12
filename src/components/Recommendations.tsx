@@ -1,12 +1,14 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { CandidateMovie, RecommendationResult } from '@/lib/types';
 import { MovieCard } from '@/components/MovieCard';
 import { MovieModal } from '@/components/MovieModal';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Spinner } from '@/components/ui/Spinner';
+import { AiBadge } from '@/components/ui/AiBadge';
 import { seededShuffle } from '@/lib/utils/format';
+import { refineRecommendations, ApiError } from '@/lib/client/api';
 
 interface Props {
   result: RecommendationResult;
@@ -21,20 +23,30 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
   const [genreFilter, setGenreFilter] = useState<string | null>(null);
   const [shuffleSeed, setShuffleSeed] = useState(0);
   const [shuffled, setShuffled] = useState(false);
+  const [refining, setRefining] = useState(false);
+  const [refinedCandidates, setRefinedCandidates] = useState<CandidateMovie[] | null>(null);
+
+  // Current picks — replaced in place when the user runs "AI refine".
+  const candidates = refinedCandidates ?? result.candidates;
+
+  // A fresh recommendation result supersedes any in-place AI refinement.
+  useEffect(() => {
+    setRefinedCandidates(null);
+  }, [result.generatedAt]);
 
   // Available genre filters from the candidate pool.
   const availableGenres = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const c of result.candidates) {
+    for (const c of candidates) {
       for (const g of c.film.genres) {
         counts.set(g, (counts.get(g) ?? 0) + 1);
       }
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
-  }, [result.candidates]);
+  }, [candidates]);
 
   const filtered = useMemo(() => {
-    let list = result.candidates;
+    let list = candidates;
     if (genreFilter) {
       list = list.filter((c) => c.film.genres.includes(genreFilter));
     }
@@ -42,7 +54,7 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
       list = seededShuffle(list, shuffleSeed);
     }
     return list;
-  }, [result.candidates, genreFilter, shuffled, shuffleSeed]);
+  }, [candidates, genreFilter, shuffled, shuffleSeed]);
 
   const toggleShuffle = () => {
     if (shuffled) {
@@ -66,6 +78,24 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleRefine = async () => {
+    if (!result.aiEnabled || refining) return;
+    setRefining(true);
+    try {
+      const res = await refineRecommendations(candidates, result.genre);
+      if (res.aiUsed) {
+        setRefinedCandidates(res.candidates);
+        onToast('✨ AI-refined your picks.', 'success');
+      } else {
+        onToast('AI refine didn’t change anything — try again.', 'info');
+      }
+    } catch (err) {
+      onToast(err instanceof ApiError ? err.message : 'AI refine failed.', 'error');
+    } finally {
+      setRefining(false);
+    }
+  };
+
   return (
     <section className="mx-auto w-full max-w-6xl px-4 py-10 animate-fade-up">
       <header className="mb-8 text-center">
@@ -73,9 +103,17 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
           Tonight’s <span className="accent-gradient">picks</span>
         </h2>
         <p className="mx-auto mt-3 max-w-md text-sm text-zinc-400">
-          {result.candidates.length} films curated from your friends’ watchlists
+          {candidates.length} films curated from your friends’ watchlists
           {result.genre ? ` for “${result.genre}”` : ''}.
-          {result.aiUsed ? ' ✨ AI-refined' : ''}
+          {result.aiUsed ? (
+            <span className="inline-flex items-center gap-1">✨ AI-refined</span>
+          ) : !result.aiEnabled ? (
+            <span className="inline-flex items-center gap-1">
+              {/* <AiBadge /> */}
+            </span>
+          ) : (
+            ''
+          )}
         </p>
         {result.degraded && (
           <p className="mx-auto mt-2 max-w-md text-xs text-amber-300">
@@ -94,6 +132,19 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
         </button>
         <button type="button" className="btn-ghost !py-2 text-xs" onClick={toggleShuffle}>
           {shuffled ? '↺ Unshuffle' : '🔀 Shuffle'}
+        </button>
+        <button
+          type="button"
+          className="btn-ghost !py-2 text-xs"
+          onClick={handleRefine}
+          disabled={!result.aiEnabled || refining}
+          title={
+            result.aiEnabled
+              ? 'Refine picks with AI'
+              : 'Add an OpenAI API key to enable AI refine'
+          }
+        >
+          {refining ? <Spinner size={14} /> : '✨'} AI refine
         </button>
         {genreFilter && (
           <button
@@ -126,7 +177,13 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
       {filtered.length > 0 ? (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
           {filtered.map((movie, i) => (
-            <MovieCard key={`${movie.film.slug}-${i}`} movie={movie} index={i} onOpen={setSelected} />
+            <MovieCard
+              key={`${movie.film.slug}-${i}`}
+              movie={movie}
+              index={i}
+              onOpen={setSelected}
+              aiEnabled={result.aiEnabled}
+            />
           ))}
         </div>
       ) : (
@@ -142,7 +199,12 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
         />
       )}
 
-      <MovieModal movie={selected} onClose={() => setSelected(null)} onMoreLikeThis={moreLikeThis} />
+      <MovieModal
+        movie={selected}
+        onClose={() => setSelected(null)}
+        onMoreLikeThis={moreLikeThis}
+        aiEnabled={result.aiEnabled}
+      />
     </section>
   );
 }

@@ -2,7 +2,7 @@
 
 // ─── Client-side API helpers ────────────────────────────────────────────
 
-import type { AnalyzeResult, Friend, RecommendationResult } from '@/lib/types';
+import type { AnalyzeResult, CandidateMovie, Friend, RecommendationResult } from '@/lib/types';
 
 export class ApiError extends Error {
   constructor(
@@ -54,4 +54,15 @@ export function getRecommendations(
   weights?: Record<string, number>,
 ): Promise<RecommendationResult> {
   return post<RecommendationResult>('/api/recommend', { username, friendIds, genre, weights });
+}
+
+/** Re-run the AI layer on the current picks to refresh reasons + look-alikes. */
+export function refineRecommendations(
+  candidates: CandidateMovie[],
+  genre: string,
+): Promise<{ candidates: CandidateMovie[]; aiUsed: boolean }> {
+  return post<{ candidates: CandidateMovie[]; aiUsed: boolean }>('/api/refine', {
+    candidates,
+    genre,
+  });
 }

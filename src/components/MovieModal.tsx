@@ -3,16 +3,20 @@
 import type { CandidateMovie } from '@/lib/types';
 import { Modal } from '@/components/ui/Modal';
 import { TasteMeter } from '@/components/ui/TasteMeter';
+import { AiBadge } from '@/components/ui/AiBadge';
 import { stars } from '@/lib/utils/format';
 
 export function MovieModal({
   movie,
   onClose,
   onMoreLikeThis,
+  aiEnabled,
 }: {
   movie: CandidateMovie | null;
   onClose: () => void;
   onMoreLikeThis: (movie: CandidateMovie) => void;
+  /** Whether an OpenAI API key is configured (hide the "needs key" badge). */
+  aiEnabled: boolean;
 }) {
   if (!movie) return null;
   const { film, ai, influencedBy, score, reasons } = movie;
@@ -137,10 +141,11 @@ export function MovieModal({
           )}
 
           {/* More like this */}
-          {ai?.moreLikeThis && ai.moreLikeThis.length > 0 && (
+          {!aiEnabled && ai?.moreLikeThis && ai.moreLikeThis.length > 0 && (
             <div className="mb-4">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+              <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
                 More like this
+                <AiBadge />
               </h3>
               <div className="flex flex-wrap gap-1.5">
                 {ai.moreLikeThis.map((title) => (

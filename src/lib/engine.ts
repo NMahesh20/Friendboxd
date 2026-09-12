@@ -3,13 +3,18 @@
 // server-side cache. Kept stateless: every request carries the data it
 // needs (username, friend ids, genre).
 
-import { crawlUser, crawlFriend, enrichFilmsWithGenres } from '@/lib/crawler/letterboxd';
+import {
+  crawlUser,
+  crawlFriend,
+  crawlFriendGenreFilms,
+  enrichFilmsWithGenres,
+} from '@/lib/crawler/letterboxd';
 import { computeTasteMatches } from '@/lib/scoring/taste-match';
-import { generateCandidates } from '@/lib/scoring/candidates';
+import { generateCandidates, computeGenreRelevance } from '@/lib/scoring/candidates';
 import { enrichWithAi } from '@/lib/ai/recommender';
 import { getCached, setCached, type CacheEntry } from '@/lib/storage/cache';
-import { resolveMood } from '@/lib/utils/genres';
-import { RECOMMENDATION_COUNT } from '@/lib/config';
+import { resolveMood, genresForUrl } from '@/lib/utils/genres';
+import { RECOMMENDATION_COUNT, aiConfig } from '@/lib/config';
 import type {
   AnalyzeResult,
   CandidateMovie,
@@ -122,17 +127,69 @@ export async function recommendMovies(
     throw new Error('No valid friends selected. Please select at least one friend.');
   }
 
-  // Generate candidates.
-  let candidates = generateCandidates(selected, user.films, genreMood);
+  // Genre-filtered crawl: fetch each friend's top films in the selected
+  // genre (sorted by their rating via /by/entry-rating/). This guarantees
+  // every candidate matches the chosen genre without slow per-film genre
+  // enrichment. Falls back to the friend's full list when the genre crawl
+  // is blocked or empty.
+  const genreNames = genresForUrl(genreMood);
+  let genreSelected: typeof selected = selected;
+  if (genreNames.length > 0) {
+    genreSelected = [];
+    for (const friend of selected) {
+      try {
+        const films = await crawlFriendGenreFilms(friend.id, genreNames, 20);
+        genreSelected.push(
+          films.length > 0
+            ? {
+                ...friend,
+                // Tag films with the crawled genres so relevance scoring is exact.
+                films: films.map((f) => ({ ...f, genres: [...genreNames] })),
+              }
+            : friend,
+        );
+      } catch {
+        genreSelected.push(friend);
+      }
+    }
+  }
 
-  // Enrich top candidates with genres (fetch film pages) for better scoring.
-  const topForEnrich = candidates.slice(0, 15).map((c) => c.film);
-  const enrichedFilms = await enrichFilmsWithGenres(topForEnrich, 15);
+  // Generate candidates.
+  let candidates = generateCandidates(genreSelected, user.films, genreMood);
+
+  // Enrich candidates with genres (fetch film pages) so genre matching is
+  // reliable. Genre-filtered films already carry genres, so this only
+  // fetches fallback films that came from a friend's full list.
+  const topForEnrich = candidates.slice(0, 20).map((c) => c.film);
+  const enrichedFilms = await enrichFilmsWithGenres(topForEnrich, 20);
   const enrichedBySlug = new Map(enrichedFilms.map((f) => [f.slug, f]));
   candidates = candidates.map((c) => {
     const enriched = enrichedBySlug.get(c.film.slug);
     return enriched ? { ...c, film: enriched } : c;
   });
+
+  // Recompute genre relevance now that films carry real genres, then
+  // hard-filter out films that don't match the selected genre/mood.
+  const { genres: moodGenres } = resolveMood(genreMood);
+  const hasMood = moodGenres.length > 0;
+  candidates = candidates.map((c) => {
+    const relevance = computeGenreRelevance(c.film, genreMood);
+    const reasons = c.reasons.filter(
+      (r) => r !== 'Matches your genre choice' && r !== 'Partially matches your mood',
+    );
+    if (hasMood) {
+      if (relevance > 0.8) reasons.push('Matches your genre choice');
+      else if (relevance > 0) reasons.push('Partially matches your mood');
+    }
+    return { ...c, genreRelevance: relevance, reasons };
+  });
+
+  if (hasMood) {
+    const matching = candidates.filter((c) => c.genreRelevance > 0);
+    // Hard-filter only when enough matches remain; otherwise keep the best
+    // candidates so the user still gets recommendations.
+    if (matching.length >= 3) candidates = matching;
+  }
 
   // Re-rank after genre enrichment.
   candidates = reRankByGenre(candidates, genreMood);
@@ -163,6 +220,7 @@ export async function recommendMovies(
     genre: genreMood,
     generatedAt: new Date().toISOString(),
     aiUsed,
+    aiEnabled: !!aiConfig.apiKey,
     degraded,
   };
 }

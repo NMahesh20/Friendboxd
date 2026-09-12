@@ -107,6 +107,8 @@ export interface RecommendationResult {
   genre: string;
   generatedAt: string;
   aiUsed: boolean;
+  /** Whether an OpenAI API key is configured (AI features available). */
+  aiEnabled: boolean;
   /** True when the pool was too small to be meaningful. */
   degraded?: boolean;
 }

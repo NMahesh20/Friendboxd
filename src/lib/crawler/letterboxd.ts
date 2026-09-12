@@ -9,6 +9,7 @@ import { crawlerConfig } from '@/lib/config';
 import { fetchHtml, HttpFetchError } from './http';
 import { fetchHtmlStealth } from './browser';
 import { rateLimiter } from './rate-limiter';
+import { genreSlug } from '@/lib/utils/genres';
 import type { Film, Friend } from '@/lib/types';
 
 const BASE = 'https://letterboxd.com';
@@ -161,9 +162,13 @@ function parseFilmPoster($: cheerio.CheerioAPI, el: cheerio.Cheerio<AnyNode>): F
       const likeEl = el.find('.like-link');
       const liked = likeEl.length > 0 && (likeEl.attr('class') ?? '').includes('is-liked');
       const uid = el.find('.poster-viewingdata').attr('data-item-uid') ?? slug;
-      // The list page only ships an empty-poster placeholder; the real poster
-      // is resolved client-side. Left undefined — the recommendation step can
-      // enrich posters from the film page's og:image when needed.
+      // The list page ships a low-res poster placeholder; upgrade it to a
+      // decent size (same trick as the legacy markup below).
+      const img = el.find('img.image').first();
+      const src = img.attr('src') ?? img.attr('data-src') ?? undefined;
+      const posterUrl = src
+        ? src.replace(/-\d+-\d+-\d+-\d+-crop\.jpg/, '-0-500-0-750-crop.jpg')
+        : undefined;
       return {
         id: uid,
         slug,
@@ -172,7 +177,7 @@ function parseFilmPoster($: cheerio.CheerioAPI, el: cheerio.Cheerio<AnyNode>): F
         rating,
         genres: [],
         liked,
-        poster: undefined,
+        poster: posterUrl,
       };
     }
   }
@@ -529,6 +534,27 @@ export async function crawlFriend(username: string, opts: CrawlOptions = {}): Pr
     bio: profile.bio,
     films: films.slice(0, maxFilms),
   };
+}
+
+/**
+ * Crawl a friend's films filtered to one or more genres, sorted by their
+ * rating (entry-rating). The genre-filtered URL guarantees every returned
+ * film belongs to the requested genre(s), so no per-film genre enrichment
+ * is needed. Returns up to `maxFilms` films.
+ */
+export async function crawlFriendGenreFilms(
+  username: string,
+  genres: string[],
+  maxFilms = 20,
+): Promise<Film[]> {
+  const genrePath = genres.map(genreSlug).join('+');
+  const films = await collectPaginated(
+    (p) => `${BASE}/${username}/films/genre/${genrePath}/by/entry-rating/page/${p}/`,
+    parseFilmsPage,
+    1,
+    `${BASE}/${username}/`,
+  );
+  return films.slice(0, maxFilms);
 }
 
 /**

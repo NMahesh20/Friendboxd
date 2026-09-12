@@ -11,11 +11,14 @@ export const GENRES = [
   'Drama',
   'Family',
   'Fantasy',
+  'History',
   'Horror',
+  'Music',
   'Mystery',
   'Romance',
   'Sci-Fi',
   'Thriller',
+  'TV Movie',
   'War',
   'Western',
 ] as const;
@@ -141,4 +144,26 @@ export function resolveMood(input: string): { genres: string[]; keywords: string
 /** Normalize a genre string for comparison. */
 export function normalizeGenre(g: string): string {
   return g.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Letterboxd URL slug for a genre (e.g. "Sci-Fi" → "science-fiction"). */
+export function genreSlug(genre: string): string {
+  const lower = genre.toLowerCase();
+  if (lower === 'sci-fi') return 'science-fiction';
+  if (lower === 'tv movie') return 'tv-movie';
+  return lower
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Genres to use for the genre-filtered crawl URL. Prefers the exact
+ * selected genre when the input is one (e.g. "war" → ["War"]); otherwise
+ * expands the mood into its mapped genres (joined with "+" in the URL).
+ */
+export function genresForUrl(genreMood: string): string[] {
+  const text = genreMood.toLowerCase().trim();
+  const exact = GENRES.find((g) => g.toLowerCase() === text);
+  if (exact) return [exact];
+  return resolveMood(genreMood).genres;
 }
