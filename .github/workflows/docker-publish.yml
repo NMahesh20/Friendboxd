@@ -15,7 +15,7 @@
 name: Build & Push Docker Images
 
 # Show the release version in the run name (e.g. "Build & Push Docker Images (0.1.0)").
-run-name: ${{ github.ref_type == 'tag' && format('Build & Push Docker Images ({0})', replace(github.ref_name, 'v', '')) || 'Build & Push Docker Images' }}
+run-name: ${{ github.ref_type == 'tag' && format('Build & Push Docker Images ({0})', github.ref_name) }}
 
 on:
   push:
