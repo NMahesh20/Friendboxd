@@ -26,6 +26,11 @@ on:
 
 env:
   IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/friendboxd
+  # Shared OCI labels applied to both images via docker/metadata-action.
+  IMAGE_TITLE: Friendboxd
+  IMAGE_DESCRIPTION: Movie picks from your friends' Letterboxd watchlists — taste-matched, genre-filtered recommendations with an optional AI layer.
+  IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+  IMAGE_ICON: https://raw.githubusercontent.com/NMahesh20/Friendboxd/refs/heads/main/images/icon.png
 
 jobs:
   build-and-push:
@@ -45,26 +50,48 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compute image tags
-        id: tags
-        run: |
-          set -euo pipefail
-          BASE="${{ env.IMAGE }}"
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            VER="${GITHUB_REF_NAME#v}"
-            echo "full=$BASE:latest,$BASE:full,$BASE:$VER" >> "$GITHUB_OUTPUT"
-            echo "light=$BASE:light,$BASE:$VER-light" >> "$GITHUB_OUTPUT"
-          else
-            echo "full=$BASE:latest,$BASE:full" >> "$GITHUB_OUTPUT"
-            echo "light=$BASE:light" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Docker metadata (full image)
+        id: meta-full
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=latest
+            type=raw,value=full
+            type=semver,pattern={{version}}
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE_TITLE }}
+            org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+            org.opencontainers.image.source=${{ env.IMAGE_SOURCE }}
+            org.opencontainers.image.url=${{ env.IMAGE_SOURCE }}
+            my.custom.namespace.icon=${{ env.IMAGE_ICON }}
+
+      - name: Docker metadata (light image)
+        id: meta-light
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=light
+            type=semver,pattern={{version}},suffix=-light
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE_TITLE }}
+            org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
+            org.opencontainers.image.source=${{ env.IMAGE_SOURCE }}
+            org.opencontainers.image.url=${{ env.IMAGE_SOURCE }}
+            my.custom.namespace.icon=${{ env.IMAGE_ICON }}
 
       - name: Build & push full image (default, with browser)
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ steps.tags.outputs.full }}
+          tags: ${{ steps.meta-full.outputs.tags }}
+          labels: ${{ steps.meta-full.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -74,6 +101,7 @@ jobs:
           context: .
           push: true
           build-args: INSTALL_BROWSER=0
-          tags: ${{ steps.tags.outputs.light }}
+          tags: ${{ steps.meta-light.outputs.tags }}
+          labels: ${{ steps.meta-light.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
