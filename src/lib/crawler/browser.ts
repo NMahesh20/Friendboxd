@@ -3,7 +3,7 @@
 // removed, realistic UA/viewport/locale, and navigator.webdriver masked.
 // Used as a fallback when plain HTTP is blocked, or when CRAWLER_MODE=browser.
 
-import { crawlerConfig } from '@/lib/config';
+import { crawlerConfig, proxyConfig } from '@/lib/config';
 
 // Playwright is a heavy dependency; import lazily so the app still boots
 // if the browser binary isn't installed yet.
@@ -16,8 +16,11 @@ async function getBrowser(): Promise<Browser> {
   if (browserPromise) return browserPromise;
   browserPromise = (async () => {
     const { chromium } = await import('playwright');
+    // Route the browser through the first proxy in the pool (if any).
+    const proxy = proxyConfig.pool[0];
     return chromium.launch({
       headless: true,
+      proxy: proxy ? { server: proxy } : undefined,
       args: [
         '--disable-blink-features=AutomationControlled',
         '--disable-dev-shm-usage',

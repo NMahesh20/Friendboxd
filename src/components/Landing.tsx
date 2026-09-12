@@ -28,29 +28,29 @@ export function Landing({
   };
 
   return (
-    <section className="relative flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center px-4 py-16 text-center">
+    <section className="relative flex flex-1 flex-col items-center justify-center px-4 py-8 text-center">
       <div className="pointer-events-none absolute inset-0 bg-hero-glow" aria-hidden="true" />
 
       <div className="relative z-10 mx-auto flex max-w-2xl flex-col items-center animate-fade-up">
-        <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-xs font-medium text-zinc-300">
+        <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-xs font-medium text-zinc-300">
           <span className="h-1.5 w-1.5 rounded-full bg-accent" />
           Powered by your friends’ Letterboxd
         </div>
 
-        <h1 className="font-display text-5xl font-bold leading-tight tracking-tight sm:text-6xl md:text-7xl">
+        <h1 className="font-display text-4xl font-bold leading-tight tracking-tight sm:text-5xl md:text-6xl">
           <span className="text-gradient">What would your</span>
           <br />
           <span className="accent-gradient">friends recommend?</span>
         </h1>
 
-        <p className="mt-6 max-w-lg text-base leading-relaxed text-zinc-400 sm:text-lg">
+        <p className="mt-5 max-w-lg text-base leading-relaxed text-zinc-400 sm:text-lg">
           Friendboxd crawls your Letterboxd network, finds the friends whose taste matches yours,
           and turns their watchlists into movie picks you’ll actually love.
         </p>
 
         <form
           onSubmit={submit}
-          className="mt-10 flex w-full max-w-md flex-col gap-3 sm:flex-row"
+          className="mt-8 flex w-full max-w-md flex-col gap-3 sm:flex-row"
           noValidate
         >
           <div className="relative flex-1">
@@ -86,7 +86,7 @@ export function Landing({
           </p>
         )}
 
-        <div className="mt-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-zinc-500">
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-zinc-500">
           <span>🔒 Private profiles handled gracefully</span>
           <span>🎯 Taste-match scoring</span>
           <span>✨ AI-curated picks</span>

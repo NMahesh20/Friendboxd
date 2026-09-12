@@ -33,7 +33,7 @@ Browser (React)  →  Next.js API routes  →  Crawler  →  Scoring engine  →
 ```
 
 ### 1. Crawler (`src/lib/crawler/`)
-Fetches Letterboxd pages with realistic browser headers and polite throttling. When Letterboxd responds with 403/429 or a challenge page, it falls back to a headless Chromium browser via Playwright. Parsers are written defensively with fallback selectors so small Letterboxd UI changes don't break them. Responses are cached to disk (1h TTL) to avoid hammering the site.
+Fetches Letterboxd pages with realistic browser fingerprints (rotated User-Agent, matching `sec-ch-ua*` client hints, varied Accept-Language) and polite throttling. Supports optional HTTP proxy rotation via `PROXY_POOL` — when multiple proxies are configured, each retry rotates to a different one. When Letterboxd responds with 403/429 or a challenge page, it falls back to a headless Chromium browser via Playwright. Parsers are written defensively with fallback selectors so small Letterboxd UI changes don't break them. Responses are cached to disk (1h TTL) to avoid hammering the site.
 
 ### 2. Taste matching (`src/lib/scoring/taste-match.ts`)
 Compares your films against each friend's using weighted signals:
@@ -106,6 +106,8 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 | `CRAWLER_MAX_FRIENDS` | `20` | Max friends discovered. |
 | `CACHE_DIR` | `.cache` | Crawl cache directory. |
 | `CACHE_TTL_MS` | `3600000` | Cache lifetime (1h). |
+| `PROXY_POOL` | — | Comma-separated proxy URLs (`http://user:pass@host:port`). |
+| `PROXY_MAX_TRIES` | `3` | Max different proxies tried per request when the pool has multiple. |
 
 ---
 

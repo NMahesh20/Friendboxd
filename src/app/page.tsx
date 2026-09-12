@@ -190,7 +190,7 @@ export default function Home() {
           : null;
 
   return (
-    <main className="relative min-h-screen">
+    <main className="relative flex min-h-screen flex-col">
       <SessionBar
         username={session.username}
         selectedCount={session.selectedFriendIds.length}
@@ -205,7 +205,8 @@ export default function Home() {
         </div>
       )}
 
-      {step === 'landing' && (
+      <div className="flex flex-1 flex-col">
+        {step === 'landing' && (
         <Landing onAnalyze={runAnalyze} loading={analyzing} error={analyzeError} />
       )}
 
@@ -260,7 +261,9 @@ export default function Home() {
         </>
       )}
 
-      <footer className="border-t border-white/5 py-8 text-center text-xs text-zinc-600">
+      </div>
+
+      <footer className="mt-auto border-t border-white/5 py-8 text-center text-xs text-zinc-600">
         <p className="mt-2">
           Friendboxd · Recommendations are based on your friends’ public Letterboxd activity ·
           Data stays in your browser session

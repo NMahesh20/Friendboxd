@@ -20,6 +20,13 @@ export interface CacheConfig {
   ttlMs: number;
 }
 
+export interface ProxyConfig {
+  /** Comma-separated proxy URLs, e.g. "http://user:pass@host:8080,http://host2:8080". */
+  pool: string[];
+  /** Max different proxies to try per request when the pool has multiple. */
+  maxTries: number;
+}
+
 function int(value: string | undefined, fallback: number): number {
   const n = Number.parseInt(value ?? '', 10);
   return Number.isFinite(n) ? n : fallback;
@@ -56,6 +63,14 @@ export const cacheConfig: CacheConfig = {
   // crawl cache. Locally we cache in the repo (.cache, gitignored).
   dir: process.env.CACHE_DIR || (isVercel ? '/tmp/friendboxd-cache' : '.cache'),
   ttlMs: int(process.env.CACHE_TTL_MS, 60 * 60 * 1000),
+};
+
+export const proxyConfig: ProxyConfig = {
+  pool: (process.env.PROXY_POOL ?? '')
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean),
+  maxTries: int(process.env.PROXY_MAX_TRIES, 3),
 };
 
 /** Maximum number of friends a user may select. */
