@@ -39,6 +39,13 @@ RUN npm run build
 FROM node:22-slim AS runner
 WORKDIR /app
 
+# OCI container labels (shown on Docker Hub).
+LABEL org.opencontainers.image.title="Friendboxd"
+LABEL org.opencontainers.image.description="Movie picks from your friends' Letterboxd watchlists — taste-matched, genre-filtered recommendations with an optional AI layer."
+LABEL org.opencontainers.image.source="https://github.com/NMahesh20/Friendboxd"
+LABEL org.opencontainers.image.url="https://github.com/NMahesh20/Friendboxd"
+LABEL my.custom.namespace.icon="https://raw.githubusercontent.com/NMahesh20/Friendboxd/refs/heads/main/images/icon.png"
+
 ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \
