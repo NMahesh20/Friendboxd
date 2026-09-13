@@ -25,8 +25,13 @@ import type {
 
 // ─── Analyze ────────────────────────────────────────────────────────────
 
-export async function analyzeTaste(username: string): Promise<AnalyzeResult> {
-  const cached = getCached(username);
+export async function analyzeTaste(
+  username: string,
+  opts: { matchTaste?: boolean } = {},
+): Promise<AnalyzeResult> {
+  // Full mode (matchTaste) is cached; light mode always re-crawls (it's fast).
+  const matchTaste = opts.matchTaste !== false;
+  const cached = matchTaste ? getCached(username) : null;
   if (cached) {
     return {
       user: cached.user,
@@ -37,10 +42,12 @@ export async function analyzeTaste(username: string): Promise<AnalyzeResult> {
     };
   }
 
-  const crawl = await crawlUser(username);
-  const matches = computeTasteMatches(crawl.user.films, crawl.friends, crawl.user.lists);
+  const crawl = await crawlUser(username, { matchTaste });
+  const matches = matchTaste
+    ? computeTasteMatches(crawl.user.films, crawl.friends, crawl.user.lists)
+    : [];
 
-  setCached(username, { user: crawl.user, friends: crawl.friends, matches });
+  if (matchTaste) setCached(username, { user: crawl.user, friends: crawl.friends, matches });
 
   return {
     user: crawl.user,
@@ -98,7 +105,7 @@ export async function recommendMovies(
     const match = matchById.get(id);
     const friend = friendById.get(id);
     const weight = weights[id] ?? 50;
-    if (friend) {
+    if (friend && friend.films.length > 0) {
       selected.push({
         id: friend.id,
         name: friend.name,
@@ -107,7 +114,8 @@ export async function recommendMovies(
         weight,
       });
     } else {
-      // Manual friend not in the cached crawl — fetch it fresh.
+      // Friend has no films (light analyze) or isn't in the cached crawl —
+      // fetch it fresh so recommendations always have watchlist data.
       try {
         const manual = await crawlFriend(id);
         selected.push({
@@ -157,11 +165,11 @@ export async function recommendMovies(
   // Generate candidates.
   let candidates = generateCandidates(genreSelected, user.films, genreMood);
 
-  // Enrich candidates with genres (fetch film pages) so genre matching is
-  // reliable. Genre-filtered films already carry genres, so this only
-  // fetches fallback films that came from a friend's full list.
-  const topForEnrich = candidates.slice(0, 20).map((c) => c.film);
-  const enrichedFilms = await enrichFilmsWithGenres(topForEnrich, 20);
+  // Enrich candidates with genres + real posters (fetch film pages). This
+  // fetches films missing genres OR still carrying the empty poster
+  // placeholder. Limit to 12 to stay within the API timeout on Render.
+  const topForEnrich = candidates.slice(0, 12).map((c) => c.film);
+  const enrichedFilms = await enrichFilmsWithGenres(topForEnrich, 12);
   const enrichedBySlug = new Map(enrichedFilms.map((f) => [f.slug, f]));
   candidates = candidates.map((c) => {
     const enriched = enrichedBySlug.get(c.film.slug);

@@ -7,7 +7,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  let body: { username?: string };
+  let body: { username?: string; matchTaste?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const result = await analyzeTaste(check.value);
+    const result = await analyzeTaste(check.value, { matchTaste: body.matchTaste });
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof ProfileNotFoundError) {

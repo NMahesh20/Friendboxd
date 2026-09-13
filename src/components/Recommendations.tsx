@@ -7,7 +7,6 @@ import { MovieModal } from '@/components/MovieModal';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Spinner } from '@/components/ui/Spinner';
 import { AiBadge } from '@/components/ui/AiBadge';
-import { seededShuffle } from '@/lib/utils/format';
 import { refineRecommendations, ApiError } from '@/lib/client/api';
 
 interface Props {
@@ -21,8 +20,6 @@ interface Props {
 export function Recommendations({ result, onRegenerate, regenerating, onBack, onToast }: Props) {
   const [selected, setSelected] = useState<CandidateMovie | null>(null);
   const [genreFilter, setGenreFilter] = useState<string | null>(null);
-  const [shuffleSeed, setShuffleSeed] = useState(0);
-  const [shuffled, setShuffled] = useState(false);
   const [refining, setRefining] = useState(false);
   const [refinedCandidates, setRefinedCandidates] = useState<CandidateMovie[] | null>(null);
 
@@ -50,21 +47,8 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
     if (genreFilter) {
       list = list.filter((c) => c.film.genres.includes(genreFilter));
     }
-    if (shuffled) {
-      list = seededShuffle(list, shuffleSeed);
-    }
     return list;
-  }, [candidates, genreFilter, shuffled, shuffleSeed]);
-
-  const toggleShuffle = () => {
-    if (shuffled) {
-      setShuffled(false);
-      setShuffleSeed(0);
-    } else {
-      setShuffleSeed(Date.now() % 100000);
-      setShuffled(true);
-    }
-  };
+  }, [candidates, genreFilter]);
 
   const moreLikeThis = (movie: CandidateMovie) => {
     const genres = movie.film.genres;
@@ -129,9 +113,6 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
         </button>
         <button type="button" className="btn-ghost !py-2 text-xs" onClick={onRegenerate} disabled={regenerating}>
           {regenerating ? <Spinner size={14} /> : '↻'} Regenerate
-        </button>
-        <button type="button" className="btn-ghost !py-2 text-xs" onClick={toggleShuffle}>
-          {shuffled ? '↺ Unshuffle' : '🔀 Shuffle'}
         </button>
         <button
           type="button"

@@ -13,6 +13,16 @@ export interface CrawlerConfig {
   rateMax: number;
   /** Sliding window length in ms (rate limiter). */
   rateWindowMs: number;
+  /**
+   * Max time (ms) the browser strategy waits for lazy-loaded posters to
+   * appear. Letterboxd ships an empty placeholder in the initial HTML and
+   * only swaps in the real poster after JS runs, so the browser must wait.
+   * The wait is adaptive (stops as soon as a real poster loads) and capped
+   * here so low-RAM hosts like Render aren't pinned for too long.
+   */
+  posterWaitMs: number;
+  /** Delay (ms) between scroll steps when triggering lazy loading. */
+  browserScrollDelayMs: number;
 }
 
 export interface AiConfig {
@@ -51,6 +61,11 @@ export const crawlerConfig: CrawlerConfig = {
   // Polite rate limit: 2 requests per 10s by default.
   rateMax: int(process.env.CRAWLER_RATE_MAX, 2),
   rateWindowMs: int(process.env.CRAWLER_RATE_WINDOW_MS, 10000),
+  // Lazy-loaded posters: wait up to 4s for a real poster to appear in the
+  // browser (adaptive — usually finishes well before the cap). Scroll steps
+  // are 120ms apart so lazy images load as the page is walked through.
+  posterWaitMs: int(process.env.CRAWLER_POSTER_WAIT_MS, 4000),
+  browserScrollDelayMs: int(process.env.CRAWLER_BROWSER_SCROLL_DELAY_MS, 120),
 };
 
 export const aiConfig: AiConfig = {

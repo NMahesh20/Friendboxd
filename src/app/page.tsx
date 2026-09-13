@@ -57,13 +57,13 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.hydrated]);
 
-  const runAnalyze = useCallback(async (username: string) => {
+  const runAnalyze = useCallback(async (username: string, matchTaste = false) => {
     setAnalyzing(true);
     setAnalyzingUser(username);
     setAnalyzeError(null);
     setStep('analyzing');
     try {
-      const result = await analyzeTaste(username);
+      const result = await analyzeTaste(username, matchTaste);
       const s = sessionRef.current;
       s.setUsername(username);
       s.setDiscovered(result);

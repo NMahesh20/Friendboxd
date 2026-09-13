@@ -27,6 +27,8 @@ export interface CrawlOptions {
   maxUserPages?: number;
   /** Collect lists + reviews too (slower). */
   deep?: boolean;
+  /** Crawl friends' watchlists + compute taste matches (default true). */
+  matchTaste?: boolean;
 }
 
 export interface CrawlResult {
@@ -52,13 +54,17 @@ export class PrivateProfileError extends Error {
 
 // ─── HTML fetching with stealth fallback ────────────────────────────────
 
-async function getHtml(url: string, referer?: string): Promise<string> {
+async function getHtml(
+  url: string,
+  referer?: string,
+  opts: { waitForPosters?: boolean } = {},
+): Promise<string> {
   // Polite rate limit — at most `rateMax` requests per `rateWindowMs`
   // (default 2 per 10s). Applies to both HTTP and browser strategies.
   await rateLimiter.acquire();
   const mode = crawlerConfig.mode;
   if (mode === 'browser') {
-    const html = await fetchHtmlStealth(url);
+    const html = await fetchHtmlStealth(url, opts);
     if (html) return html;
     throw new HttpFetchError('Stealth browser unavailable', 0, false);
   }
@@ -68,7 +74,7 @@ async function getHtml(url: string, referer?: string): Promise<string> {
     console.warn('[crawler] HTTP failed, browser fallback:', url, (err as Error).message);
     if (mode === 'http') throw err;
     // auto → try stealth browser as fallback.
-    const html = await fetchHtmlStealth(url);
+    const html = await fetchHtmlStealth(url, opts);
     if (html) return html;
     throw err;
   }
@@ -133,6 +139,16 @@ function splitTitleYear(fullName: string): { title: string; year: number | null 
 }
 
 /**
+ * True when a poster URL is Letterboxd's empty placeholder (a gray box
+ * shipped in the initial HTML) rather than a real poster. The real poster
+ * is only available from the film page's og:image, so list-page posters
+ * that are still placeholders should be treated as missing.
+ */
+function isEmptyPoster(src: string | undefined): boolean {
+  return !!src && src.includes('/static/img/empty-poster');
+}
+
+/**
  * Parse a single film from a list item. Supports the modern markup
  * (li.griditem > div.react-component[data-item-slug]) and the legacy
  * markup (li.poster-container > div.film-poster[data-film-slug]).
@@ -162,13 +178,15 @@ function parseFilmPoster($: cheerio.CheerioAPI, el: cheerio.Cheerio<AnyNode>): F
       const likeEl = el.find('.like-link');
       const liked = likeEl.length > 0 && (likeEl.attr('class') ?? '').includes('is-liked');
       const uid = el.find('.poster-viewingdata').attr('data-item-uid') ?? slug;
-      // The list page ships a low-res poster placeholder; upgrade it to a
-      // decent size (same trick as the legacy markup below).
+      // The list page ships an empty poster placeholder; the real poster is
+      // only on the film page (og:image). Treat the placeholder as missing so
+      // the UI shows the title fallback and enrichment can fetch the real one.
       const img = el.find('img.image').first();
       const src = img.attr('src') ?? img.attr('data-src') ?? undefined;
-      const posterUrl = src
-        ? src.replace(/-\d+-\d+-\d+-\d+-crop\.jpg/, '-0-500-0-750-crop.jpg')
-        : undefined;
+      const posterUrl =
+        src && !isEmptyPoster(src)
+          ? src.replace(/-\d+-\d+-\d+-\d+-crop\.jpg/, '-0-500-0-750-crop.jpg')
+          : undefined;
       return {
         id: uid,
         slug,
@@ -192,10 +210,12 @@ function parseFilmPoster($: cheerio.CheerioAPI, el: cheerio.Cheerio<AnyNode>): F
     const year = yearRaw ? parseInt(yearRaw, 10) : null;
     const img = poster.find('img').first();
     const src = img.attr('src') ?? img.attr('data-src') ?? undefined;
-    // Letterboxd serves low-res placeholders; upgrade to a decent size.
-    const posterUrl = src
-      ? src.replace(/-\d+-\d+-\d+-\d+-crop\.jpg/, '-0-500-0-750-crop.jpg')
-      : undefined;
+    // Letterboxd serves an empty placeholder on list pages; treat it as
+    // missing so the real poster is fetched from the film page later.
+    const posterUrl =
+      src && !isEmptyPoster(src)
+        ? src.replace(/-\d+-\d+-\d+-\d+-crop\.jpg/, '-0-500-0-750-crop.jpg')
+        : undefined;
     const ratingEl = el.find('.rating').first();
     const rating = parseRating($, ratingEl);
     const likeEl = el.find('.like-link');
@@ -334,6 +354,10 @@ function parseFilmPage(html: string, fallback: Film): Film {
     $('meta[property="og:image"]').attr('content') ??
     $('img.image').first().attr('src') ??
     fallback.poster;
+  // Never let a lazy-load placeholder become a "real" poster — if og:image
+  // is missing and the img is still the empty placeholder, keep the fallback
+  // (a real poster from the list page, or undefined → title fallback in UI).
+  const poster = img && !isEmptyPoster(img) ? img : fallback.poster;
   // Synopsis + tagline + director + runtime from the film page.
   const synopsis = $('div.truncate').first().text().trim() || fallback.synopsis;
   const tagline = $('h4.tagline').first().text().trim() || fallback.tagline;
@@ -346,7 +370,7 @@ function parseFilmPage(html: string, fallback: Film): Film {
     title,
     year: Number.isFinite(year as number) ? year : fallback.year,
     genres: [...new Set(genres)],
-    poster: img,
+    poster,
     synopsis,
     tagline,
     director,
@@ -470,12 +494,18 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
     lists: userLists,
   };
 
-  // 4. Friends' films (capped).
+  // 4. Friends' films (capped). Skipped in light mode (matchTaste=false):
+  //    friends are discovered but their watchlists aren't crawled, so the
+  //    analyze step stays fast.
   const friends: Friend[] = [];
   const seen = new Set<string>();
   for (const f of following.slice(0, maxFriends)) {
     if (seen.has(f.id)) continue;
     seen.add(f.id);
+    if (opts.matchTaste === false) {
+      friends.push({ id: f.id, name: f.name, avatar: f.avatar, films: [] });
+      continue;
+    }
     try {
       const films = await collectPaginated(
         (p) => `${BASE}/${f.id}/films/page/${p}/`,
@@ -558,17 +588,25 @@ export async function crawlFriendGenreFilms(
 }
 
 /**
- * Enrich a set of films with genre data by visiting their film pages.
- * Only fetches films missing genres, up to `limit`.
+ * Enrich a set of films with genre data (and real posters) by visiting
+ * their film pages. Fetches films missing genres OR still carrying the
+ * empty poster placeholder, up to `limit`.
  */
 export async function enrichFilmsWithGenres(films: Film[], limit = 20): Promise<Film[]> {
-  const missing = films.filter((f) => f.genres.length === 0).slice(0, limit);
+  const missing = films
+    .filter((f) => f.genres.length === 0 || isEmptyPoster(f.poster))
+    .slice(0, limit);
   const bySlug = new Map<string, Film>();
   for (const f of films) bySlug.set(f.slug, f);
 
   for (const film of missing) {
     try {
-      const html = await getHtml(`${BASE}/film/${film.slug}/`);
+      // Film pages carry the real poster in og:image (server-rendered), so
+      // skip the lazy-poster wait — it would only hold the browser open and
+      // burn RAM on memory-constrained hosts like Render.
+      const html = await getHtml(`${BASE}/film/${film.slug}/`, undefined, {
+        waitForPosters: false,
+      });
       const enriched = parseFilmPage(html, film);
       bySlug.set(film.slug, enriched);
     } catch {
