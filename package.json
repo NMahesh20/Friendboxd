@@ -11,9 +11,11 @@
     "setup:crawler": "playwright install chromium"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^153.0.0",
     "cheerio": "^1.0.0",
     "next": "^16.3.5",
     "playwright": "^1.47.2",
+    "playwright-core": "^1.63.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "undici": "^7.29.1"
