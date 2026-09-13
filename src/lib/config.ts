@@ -38,27 +38,16 @@ function int(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/**
- * True when running on Vercel (serverless). We use this to pick leaner
- * defaults: browser-first crawling via @sparticuz/chromium (plain HTTP is
- * usually blocked from cloud IPs), a smaller crawl scope, and an ephemeral
- * /tmp cache — all to fit the Hobby plan's 60s function limit and
- * read-only filesystem.
- */
-const isVercel = process.env.VERCEL === '1';
-
 export const crawlerConfig: CrawlerConfig = {
-  mode:
-    (process.env.CRAWLER_MODE as CrawlerConfig['mode']) ||
-    (isVercel ? 'browser' : 'auto'),
-  maxPages: int(process.env.CRAWLER_MAX_PAGES, isVercel ? 2 : 3),
-  delayMs: int(process.env.CRAWLER_DELAY_MS, isVercel ? 300 : 500),
-  timeoutMs: int(process.env.CRAWLER_TIMEOUT_MS, isVercel ? 15000 : 20000),
-  maxFilms: int(process.env.CRAWLER_MAX_FILMS, isVercel ? 120 : 200),
-  maxFriends: int(process.env.CRAWLER_MAX_FRIENDS, isVercel ? 15 : 20),
+  mode: (process.env.CRAWLER_MODE as CrawlerConfig['mode']) || 'auto',
+  maxPages: int(process.env.CRAWLER_MAX_PAGES, 3),
+  delayMs: int(process.env.CRAWLER_DELAY_MS, 500),
+  timeoutMs: int(process.env.CRAWLER_TIMEOUT_MS, 20000),
+  maxFilms: int(process.env.CRAWLER_MAX_FILMS, 200),
+  maxFriends: int(process.env.CRAWLER_MAX_FRIENDS, 20),
   // The user's own watchlist is the exclusion set, so crawl it deeper
   // than friends' lists to avoid recommending already-watched films.
-  maxUserPages: int(process.env.CRAWLER_MAX_USER_PAGES, isVercel ? 4 : 8),
+  maxUserPages: int(process.env.CRAWLER_MAX_USER_PAGES, 8),
   // Polite rate limit: 2 requests per 10s by default.
   rateMax: int(process.env.CRAWLER_RATE_MAX, 2),
   rateWindowMs: int(process.env.CRAWLER_RATE_WINDOW_MS, 10000),
@@ -71,10 +60,10 @@ export const aiConfig: AiConfig = {
 };
 
 export const cacheConfig: CacheConfig = {
-  // On Vercel the filesystem is read-only except /tmp, which is shared
-  // across warm invocations of the same instance — good enough for a 1h
-  // crawl cache. Locally we cache in the repo (.cache, gitignored).
-  dir: process.env.CACHE_DIR || (isVercel ? '/tmp/friendboxd-cache' : '.cache'),
+  // Cache lives in the repo (.cache, gitignored) locally, or wherever
+  // CACHE_DIR points (e.g. /tmp in containers). Ephemeral by design — it's
+  // a 1h crawl cache, not durable data.
+  dir: process.env.CACHE_DIR || '.cache',
   ttlMs: int(process.env.CACHE_TTL_MS, 60 * 60 * 1000),
 };
 

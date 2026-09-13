@@ -1,0 +1,35 @@
+# ─── Friendboxd — Render Blueprint ──────────────────────────────────────
+# Deploys the Docker image as a persistent web service. The full image
+# (with the stealth-browser crawl fallback) is the default.
+#
+# How to deploy:
+#   1. Push this repo to GitHub.
+#   2. In Render: New → Blueprint → connect the repo. render.yaml is
+#      auto-detected and provisions the service.
+#   3. Set OPENAI_API_KEY (optional) in the service's Environment tab.
+#
+# Notes:
+#   - The crawl cache lives in /tmp (ephemeral, wiped on restart). It's a
+#     1h cache, not durable data. Add a `disk` block below to persist it.
+#   - Free web services sleep after ~15 min of inactivity (cold start ~50s).
+#     Upgrade `plan` to `starter` for an always-on instance.
+
+services:
+  - type: web
+    name: friendboxd
+    runtime: docker
+    repo: https://github.com/NMahesh20/Friendboxd
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    # Run the lean standalone server (NOT `next start`) — it uses far less
+    # memory, which matters on the free tier's 512 MB limit.
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CRAWLER_MODE
+        value: auto
+      - key: OPENAI_API_KEY
+        sync: false
