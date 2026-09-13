@@ -126,7 +126,7 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 | `OPENAI_API_KEY` | — | API key for the AI layer (optional). |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Any OpenAI-compatible endpoint. |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used for reasons / "more like this". |
-| `CRAWLER_MODE` | `auto` | `auto` \| `http` \| `browser`. Defaults to `browser` on Vercel. |
+| `CRAWLER_MODE` | `auto` | `auto` \| `http` \| `browser`. |
 | `CRAWLER_MAX_PAGES` | `3` | Max pages crawled per profile. |
 | `CRAWLER_DELAY_MS` | `500` | Polite delay between requests. |
 | `CRAWLER_TIMEOUT_MS` | `20000` | Per-request timeout. |
@@ -142,31 +142,29 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 
 ---
 
-## ☁️ Deploying to Vercel (free tier)
+## ☁️ Deploying to Render
 
-Friendboxd is optimized to run on Vercel's **Hobby (free) plan**.
+Friendboxd ships a `render.yaml` blueprint that deploys the Docker image as a **persistent web service** — no serverless timeouts, full Playwright browser support, and a writable filesystem.
 
 ### One-click deploy
 
 1. Push this repo to GitHub.
-2. Go to [vercel.com](https://vercel.com) → **Add New Project** → import the repo.
-3. Framework preset: **Next.js** (auto-detected). Build command `npm run build`.
-4. (Optional) Add the `OPENAI_API_KEY` environment variable.
-5. **Deploy.** That's it.
+2. Go to [render.com](https://render.com) → **New** → **Blueprint** → connect the repo. `render.yaml` is auto-detected.
+3. (Optional) Set `OPENAI_API_KEY` in the service's **Environment** tab.
+4. **Deploy.** Render builds the Docker image and starts the service.
 
-### What the free-tier optimization does
+### What you get
 
-- **Browser-first crawling** — on Vercel the crawler defaults to `browser` mode using `@sparticuz/chromium` (a Lambda-compatible Chromium), since plain HTTP is usually blocked from cloud IPs.
-- **Leaner crawl scope** — fewer pages, films, and friends are fetched per request to stay within the 60s function limit.
-- **Ephemeral cache** — the crawl cache lives in `/tmp` (per-instance) instead of the repo, so warm instances serve cached results without writing to the read-only filesystem.
-- **`maxDuration: 60`** — both API routes are configured for the maximum function duration allowed on the Hobby plan.
+- **No function timeouts** — it's a long-lived container, so the full "find my friends + match taste" crawl can take as long as it needs (no 60s serverless cap).
+- **Full stealth-browser crawling** — Chromium ships in the image (`CRAWLER_MODE=auto`), so the browser fallback works when Letterboxd blocks plain HTTP.
+- **Writable filesystem** — the crawl cache lives in `/tmp` (ephemeral). Add a Render Disk to persist it across restarts.
+- **Lean standalone server** — the image runs `node server.js` (Next.js `output: 'standalone'`), not `next start`, so it fits the free tier's 512 MB memory comfortably.
 
-### ⚠️ Free-tier limitations (please read)
+### ⚠️ Notes
 
-- **Auto-analyze may time out.** The full "find my friends + match taste" crawl can exceed 60s on a cold start, which is the Hobby plan's hard limit. When that happens, the app **gracefully falls back to manual friend entry** — just type your friends' usernames and everything else works. This is by design.
-- **No persistent cache.** `/tmp` is wiped when instances spin down, so the first request after a cold start re-crawls. The 1h cache only helps warm instances.
+- **Free web services sleep** after ~15 min of inactivity and take ~50s to cold start. Upgrade `plan` in `render.yaml` to `starter` for an always-on instance.
 - **Letterboxd may block you.** Scraping from a shared cloud IP is more likely to hit 403s than from your home connection. The app handles this with the manual-entry fallback, so it never fully breaks.
-- **Browser on Vercel needs the Pro plan.** The `@sparticuz/chromium` binary is ~64 MB, which exceeds the Hobby plan's 50 MB function size limit. On Hobby, the crawler falls back to HTTP (which Letterboxd may block) or manual friend entry.
+- **Cache is ephemeral.** `/tmp` is wiped on restart, so the first request after a restart re-crawls. The 1h cache only helps while the instance stays up.
 
 ### Self-hosting (Docker / VPS / Railway / Render)
 
@@ -176,6 +174,11 @@ npm run setup:crawler   # installs Chromium for the browser fallback
 npm run build
 npm run start
 ```
+
+> **Note:** `npm run start` runs `next start`, which needs the full build and more memory. On memory-constrained hosts (e.g. Render's free tier, 512 MB), run the lean standalone server instead — it's what the Docker image uses:
+> ```bash
+> node .next/standalone/server.js
+> ```
 
 ### 🐳 Docker (optimized)
 

@@ -21,7 +21,6 @@ README.md
 Dockerfile
 docker-compose.yml
 .dockerignore
-vercel.json
 images
 tsconfig.tsbuildinfo
 next-env.d.ts
