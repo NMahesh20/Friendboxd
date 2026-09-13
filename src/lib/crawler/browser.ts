@@ -48,10 +48,70 @@ export async function closeBrowser(): Promise<void> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Trigger Letterboxd's lazy-loaded posters (LazyPoster) and wait for a real
+ * poster to appear. The initial HTML ships an empty placeholder
+ * (`/static/img/empty-poster`); the real poster URL is only swapped in after
+ * JS runs, so the browser must scroll (lazy images load near the viewport)
+ * and then wait. The wait is ADAPTIVE — it returns as soon as a real poster
+ * is present — and bounded by `crawlerConfig.posterWaitMs` so low-RAM hosts
+ * like Render aren't pinned for longer than needed.
+ *
+ * Pages without poster images (profiles, following, lists) return
+ * immediately.
+ */
+async function waitForPosters(page: Page): Promise<void> {
+  // Nothing to wait for if the page has no poster images.
+  const hasPosters = await page.evaluate(
+    () => document.querySelectorAll('img.image, img.poster').length > 0,
+  );
+  if (!hasPosters) return;
+
+  // Give React a moment to hydrate the LazyPoster components.
+  await sleep(300);
+
+  // Scroll through the page so lazy images load (they only fetch when near
+  // the viewport). Cap the number of steps so huge pages don't stall.
+  await page.evaluate(async (stepDelay) => {
+    const step = window.innerHeight;
+    const maxSteps = 40;
+    let steps = 0;
+    for (let y = 0; y < document.body.scrollHeight && steps < maxSteps; y += step, steps++) {
+      window.scrollTo(0, y);
+      await new Promise((r) => setTimeout(r, stepDelay));
+    }
+    window.scrollTo(0, 0);
+  }, crawlerConfig.browserScrollDelayMs);
+
+  // Wait until a real poster URL appears (the LazyPoster swaps the empty
+  // placeholder for the real src). Stop as soon as one loads.
+  const deadline = Date.now() + crawlerConfig.posterWaitMs;
+  while (Date.now() < deadline) {
+    const loaded = await page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll('img.image, img.poster'));
+      return imgs.some((img) => {
+        const src = img.getAttribute('src') ?? img.getAttribute('data-src') ?? '';
+        return src && !src.includes('/static/img/empty-poster');
+      });
+    });
+    if (loaded) break;
+    await sleep(150);
+  }
+}
+
+/**
  * Fetch a page's rendered HTML through a stealth browser session.
  * Returns null when the browser cannot be launched (e.g. binary missing).
+ *
+ * By default it waits for lazy-loaded posters so the returned HTML carries
+ * real poster URLs. Pass `{ waitForPosters: false }` for pages where the
+ * server-rendered markup already has what's needed (e.g. film pages, whose
+ * poster lives in og:image) — this avoids holding the browser open on
+ * memory-constrained hosts.
  */
-export async function fetchHtmlStealth(url: string): Promise<string | null> {
+export async function fetchHtmlStealth(
+  url: string,
+  opts: { waitForPosters?: boolean } = {},
+): Promise<string | null> {
   let browser: Browser | null = null;
   try {
     browser = await getBrowser();
@@ -78,8 +138,15 @@ export async function fetchHtmlStealth(url: string): Promise<string | null> {
       waitUntil: 'domcontentloaded',
       timeout: crawlerConfig.timeoutMs,
     });
+    // Letterboxd lazy-loads posters — wait for them to appear so the
+    // returned HTML carries real poster URLs (adaptive + bounded for
+    // low-RAM hosts). Skipped when the caller only needs server-rendered
+    // markup (e.g. film pages, whose poster is in og:image).
+    if (opts.waitForPosters !== false) {
+      await waitForPosters(page);
+    }
     // Small human-like pause.
-    await sleep(400 + Math.random() * 600);
+    await sleep(200 + Math.random() * 300);
     const html = await page.content();
     await context.close();
     return html;

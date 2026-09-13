@@ -39,8 +39,8 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   return data;
 }
 
-export function analyzeTaste(username: string): Promise<AnalyzeResult> {
-  return post<AnalyzeResult>('/api/analyze', { username });
+export function analyzeTaste(username: string, matchTaste = false): Promise<AnalyzeResult> {
+  return post<AnalyzeResult>('/api/analyze', { username, matchTaste });
 }
 
 export function validateFriend(username: string): Promise<{ friend: Friend }> {

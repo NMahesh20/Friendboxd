@@ -135,6 +135,8 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 | `CRAWLER_MAX_USER_PAGES` | `8` | Pages crawled for the user's own watchlist (exclusion set). |
 | `CRAWLER_RATE_MAX` | `2` | Max requests per sliding window (rate limiter). |
 | `CRAWLER_RATE_WINDOW_MS` | `10000` | Rate-limiter window length (10s). |
+| `CRAWLER_POSTER_WAIT_MS` | `4000` | Max wait for lazy-loaded posters in the browser strategy (adaptive, capped). |
+| `CRAWLER_BROWSER_SCROLL_DELAY_MS` | `120` | Delay between scroll steps when triggering lazy loading. |
 | `CACHE_DIR` | `.cache` | Crawl cache directory. |
 | `CACHE_TTL_MS` | `3600000` | Cache lifetime (1h). |
 | `PROXY_POOL` | — | Comma-separated proxy URLs (`http://user:pass@host:port`). |

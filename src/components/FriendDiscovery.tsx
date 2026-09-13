@@ -3,7 +3,7 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import type { AnalyzeResult, Friend, TasteMatch } from '@/lib/types';
 import { MAX_SELECTED_FRIENDS } from '@/lib/config';
-import { validateUsername } from '@/lib/utils/validation';
+import { sanitizeUsernameInput, validateUsername } from '@/lib/utils/validation';
 import { TasteMeter } from '@/components/ui/TasteMeter';
 import { Spinner } from '@/components/ui/Spinner';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -159,14 +159,16 @@ export function FriendDiscovery({
               <span className="truncate font-medium text-white">{friend.name}</span>
               <span className="truncate text-xs text-zinc-500">@{friend.id}</span>
             </div>
-            <div className="mt-1 flex items-center gap-2 text-xs text-zinc-400">
-              <span>{friend.films.length} films</span>
-              {friend.unavailable && (
-                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-300">
-                  unavailable
-                </span>
-              )}
-            </div>
+            {friend.films.length > 0 && (
+              <div className="mt-1 flex items-center gap-2 text-xs text-zinc-400">
+                <span>{friend.films.length} films</span>
+                {friend.unavailable && (
+                  <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] text-amber-300">
+                    unavailable
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="w-28 shrink-0 sm:w-32">
@@ -285,7 +287,7 @@ export function FriendDiscovery({
               id="manual-friend"
               type="text"
               value={manualInput}
-              onChange={(e) => setManualInput(e.target.value)}
+              onChange={(e) => setManualInput(sanitizeUsernameInput(e.target.value))}
               placeholder="friend-username"
               className="input-dark pl-8"
               disabled={adding || atLimit}
