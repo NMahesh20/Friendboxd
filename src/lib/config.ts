@@ -40,16 +40,17 @@ function int(value: string | undefined, fallback: number): number {
 
 /**
  * True when running on Vercel (serverless). We use this to pick leaner
- * defaults: HTTP-only crawling (no Playwright browser), a smaller crawl
- * scope, and an ephemeral /tmp cache — all to fit the Hobby plan's 60s
- * function limit and read-only filesystem.
+ * defaults: browser-first crawling via @sparticuz/chromium (plain HTTP is
+ * usually blocked from cloud IPs), a smaller crawl scope, and an ephemeral
+ * /tmp cache — all to fit the Hobby plan's 60s function limit and
+ * read-only filesystem.
  */
 const isVercel = process.env.VERCEL === '1';
 
 export const crawlerConfig: CrawlerConfig = {
   mode:
     (process.env.CRAWLER_MODE as CrawlerConfig['mode']) ||
-    (isVercel ? 'http' : 'auto'),
+    (isVercel ? 'browser' : 'auto'),
   maxPages: int(process.env.CRAWLER_MAX_PAGES, isVercel ? 2 : 3),
   delayMs: int(process.env.CRAWLER_DELAY_MS, isVercel ? 300 : 500),
   timeoutMs: int(process.env.CRAWLER_TIMEOUT_MS, isVercel ? 15000 : 20000),

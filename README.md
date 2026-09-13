@@ -126,7 +126,7 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 | `OPENAI_API_KEY` | — | API key for the AI layer (optional). |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Any OpenAI-compatible endpoint. |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used for reasons / "more like this". |
-| `CRAWLER_MODE` | `auto` | `auto` \| `http` \| `browser`. |
+| `CRAWLER_MODE` | `auto` | `auto` \| `http` \| `browser`. Defaults to `browser` on Vercel. |
 | `CRAWLER_MAX_PAGES` | `3` | Max pages crawled per profile. |
 | `CRAWLER_DELAY_MS` | `500` | Polite delay between requests. |
 | `CRAWLER_TIMEOUT_MS` | `20000` | Per-request timeout. |
@@ -156,7 +156,7 @@ Friendboxd is optimized to run on Vercel's **Hobby (free) plan**.
 
 ### What the free-tier optimization does
 
-- **HTTP-first crawling** — on Vercel the crawler defaults to `http` mode (no Playwright browser), which keeps the serverless bundle small and fast. The heavy Chromium fallback is only used when self-hosting.
+- **Browser-first crawling** — on Vercel the crawler defaults to `browser` mode using `@sparticuz/chromium` (a Lambda-compatible Chromium), since plain HTTP is usually blocked from cloud IPs.
 - **Leaner crawl scope** — fewer pages, films, and friends are fetched per request to stay within the 60s function limit.
 - **Ephemeral cache** — the crawl cache lives in `/tmp` (per-instance) instead of the repo, so warm instances serve cached results without writing to the read-only filesystem.
 - **`maxDuration: 60`** — both API routes are configured for the maximum function duration allowed on the Hobby plan.
@@ -166,7 +166,7 @@ Friendboxd is optimized to run on Vercel's **Hobby (free) plan**.
 - **Auto-analyze may time out.** The full "find my friends + match taste" crawl can exceed 60s on a cold start, which is the Hobby plan's hard limit. When that happens, the app **gracefully falls back to manual friend entry** — just type your friends' usernames and everything else works. This is by design.
 - **No persistent cache.** `/tmp` is wiped when instances spin down, so the first request after a cold start re-crawls. The 1h cache only helps warm instances.
 - **Letterboxd may block you.** Scraping from a shared cloud IP is more likely to hit 403s than from your home connection. The app handles this with the manual-entry fallback, so it never fully breaks.
-- **Playwright is not used on Vercel.** The stealth browser fallback is disabled there; it's only active when self-hosting.
+- **Browser on Vercel needs the Pro plan.** The `@sparticuz/chromium` binary is ~64 MB, which exceeds the Hobby plan's 50 MB function size limit. On Hobby, the crawler falls back to HTTP (which Letterboxd may block) or manual friend entry.
 
 ### Self-hosting (Docker / VPS / Railway / Render)
 
