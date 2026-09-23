@@ -58,7 +58,7 @@ ENV NODE_ENV=production \
     CRAWLER_RATE_WINDOW_MS=10000 \
     # Browser-fingerprint identity: UA + Client Hints + TLS profile all use
     # this impersonation target (chrome131 ships with curl-impersonate v2.2).
-    # CRAWLER_IMPERSONATE=chrome131 \
+    CRAWLER_IMPERSONATE=chrome131 \
     # Use the bundled curl-impersonate binary for TLS impersonation.
     CRAWLER_TLS_IMPERSONATION=auto \
     # Ephemeral, writable cache (the repo .cache is not present here).
