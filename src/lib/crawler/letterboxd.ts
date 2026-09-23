@@ -419,10 +419,12 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
   const maxUserPages = opts.maxUserPages ?? crawlerConfig.maxUserPages;
   const warnings: string[] = [];
 
-  // 1. Profile
+  // 1. Profile — navigated same-origin from the homepage (a cold
+  //    sec-fetch-site: none hit on a profile path is a bot signal and gets
+  //    blocked; the homepage warm-up + referer primes the session cookie).
   let profileHtml: string;
   try {
-    profileHtml = await getHtml(`${BASE}/${username}/`);
+    profileHtml = await getHtml(`${BASE}/${username}/`, `${BASE}/`);
   } catch (err) {
     if (err instanceof HttpFetchError && err.status === 404) {
       throw new ProfileNotFoundError(username);
@@ -538,7 +540,7 @@ export async function crawlFriend(username: string, opts: CrawlOptions = {}): Pr
 
   let profileHtml: string;
   try {
-    profileHtml = await getHtml(`${BASE}/${username}/`);
+    profileHtml = await getHtml(`${BASE}/${username}/`, `${BASE}/`);
   } catch (err) {
     if (err instanceof HttpFetchError && err.status === 404) {
       throw new ProfileNotFoundError(username);

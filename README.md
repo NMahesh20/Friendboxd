@@ -9,7 +9,7 @@ Enter your Letterboxd username and Friendboxd quietly reads your friends' public
 ---
 ## 📝 Note
 
-The datacenter IP where the website is hosted are blocked from accessing Letterboxd :( hence use the below docker way
+The crawler now drives Letterboxd with a coherent **browser fingerprint** (UA + Client Hints + TLS impersonation via the bundled `curl-impersonate` binary, matching the exact engine the Python `curl_cffi` library wraps) and a real browsing flow: a top-level warm-up GET to the homepage, then same-origin navigations with a Referer. Plain HTTP clients get 403'd by Letterboxd's fingerprinting — the impersonating transport gets **200 with real data from datacenter IPs**.
 
 ```bash
 docker pull oblivion2098/friendboxd:latest   # full (with stealth-browser fallback)
@@ -61,7 +61,13 @@ Browser (React)  →  Next.js API routes  →  Crawler  →  Scoring engine  →
 ```
 
 ### 1. Crawler (`src/lib/crawler/`)
-Fetches Letterboxd pages with realistic browser fingerprints (rotated User-Agent, matching `sec-ch-ua*` client hints, varied Accept-Language) and polite throttling. A **sliding-window rate limiter** caps requests at 2 per 10 seconds by default (tunable via `CRAWLER_RATE_MAX` / `CRAWLER_RATE_WINDOW_MS`). Supports optional HTTP proxy rotation via `PROXY_POOL` — when multiple proxies are configured, each retry rotates to a different one. When Letterboxd responds with 403/429 or a challenge page, it falls back to a headless Chromium browser via Playwright. Parsers are written defensively with fallback selectors so small Letterboxd UI changes don't break them. Responses are cached to disk (1h TTL) to avoid hammering the site.
+Fetches Letterboxd pages under a **coherent per-session browser fingerprint** (`fingerprint.ts`: a stable User-Agent + matching `sec-ch-ua*` Client Hints, pinned to one "impersonation target" — `chrome131` by default, randomly rotated **per session** across 4 known profiles when unpinned, so consecutive crawls don't reuse one static identity). Every crawl follows a real browsing flow: a **top-level warm-up GET** to the homepage (page-load headers, `sec-fetch-site: none`) primes the session before any data call, then every request is an **in-site navigation** (same-origin `sec-fetch-*` + the previous page as `Referer`) — cold `site:none` hits on profile paths are exactly what Letterboxd blocks.
+
+Two transports, in order:
+1. **`curl-impersonate`** (`impersonate.ts`) — a patched curl whose TLS ClientHello / HTTP2 fingerprint is byte-compatible with real Chrome (the same engine the Python `curl_cffi` module wraps, which is what defeats header+TLS fingerprinting WAFs). Up to 3 randomly sampled profiles are tried against the binary to find one it supports.
+2. **`undici`** (Next.js fetch / proxied) as a dependency-free fallback when the binary isn't installed.
+
+A **sliding-window rate limiter** caps requests at 2 per 10 seconds by default (tunable via `CRAWLER_RATE_MAX` / `CRAWLER_RATE_WINDOW_MS`), with optional HTTP proxy rotation via `PROXY_POOL`. When Letterboxd responds with 403/429 or a challenge page, it falls back to a headless Chromium via Playwright (`browser.ts`, which shares the same session fingerprint). Parsers are written defensively with fallback selectors and responses are cached to disk (1h TTL).
 
 ### 2. Taste matching (`src/lib/scoring/taste-match.ts`)
 Compares your films against each friend's using weighted signals:
@@ -91,6 +97,7 @@ Everything persists in `sessionStorage` — username, selected friends, weights,
 - **Tailwind CSS 3** (custom dark cinematic theme)
 - **cheerio** for HTML parsing
 - **playwright** for stealth browser fallback
+- **curl-impersonate** (optional, bundled in Docker) for real-Chrome TLS impersonation
 - **OpenAI-compatible API** for the optional AI layer
 
 ---
@@ -141,6 +148,9 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 | `CACHE_TTL_MS` | `3600000` | Cache lifetime (1h). |
 | `PROXY_POOL` | — | Comma-separated proxy URLs (`http://user:pass@host:port`). |
 | `PROXY_MAX_TRIES` | `3` | Max different proxies tried per request when the pool has multiple. |
+| `CRAWLER_IMPERSONATE` | random | Pin the session fingerprint's impersonation target (`chrome131` \| `chrome124` \| `chrome120` \| `chrome116`). Unset = randomly rotated per session. |
+| `CRAWLER_TLS_IMPERSONATION` | `auto` | `auto` uses the curl-impersonate binary when available, else falls back to plain HTTP. `off` forces plain HTTP. |
+| `CURL_IMPERSONATE_BIN` | — | Explicit path to a curl-impersonate binary (searched on PATH otherwise). |
 
 ---
 
@@ -165,7 +175,7 @@ Friendboxd ships a `render.yaml` blueprint that deploys the Docker image as a **
 ### ⚠️ Notes
 
 - **Free web services sleep** after ~15 min of inactivity and take ~50s to cold start. Upgrade `plan` in `render.yaml` to `starter` for an always-on instance.
-- **Letterboxd may block you.** Scraping from a shared cloud IP is more likely to hit 403s than from your home connection. The app handles this with the manual-entry fallback, so it never fully breaks.
+- **Letterboxd may block you.** The bundled TLS impersonation + warm-up flow gets through Letterboxd's header/TLS fingerprinting from datacenter IPs (verified live), but shared/reputation-flagged IPs can still 403 outright. Set `PROXY_POOL` to route around that, and the manual-entry fallback means the app never fully breaks.
 - **Cache is ephemeral.** `/tmp` is wiped on restart, so the first request after a restart re-crawls. The 1h cache only helps while the instance stays up.
 
 ### Self-hosting (Docker / VPS / Railway / Render)
@@ -186,19 +196,21 @@ npm run start
 
 The repo ships a multi-stage `Dockerfile` that uses Next.js `output: 'standalone'` — the runtime image contains **only the traced server + static assets** (no source, no dev dependencies). It runs as a non-root user and includes a healthcheck.
 
-**Build & run (default — with the stealth-browser crawl fallback, ~1.7 GB):**
+**Build & run (default — with stealth-browser fallback + TLS impersonation, ~1.7 GB):**
 
 ```bash
 docker build -t friendboxd .
 docker run --rm -p 3000:3000 friendboxd
 ```
 
-**Lightweight HTTP-only variant (smaller, ~290 MB):**
+**Lightweight HTTP-only variant with TLS impersonation (~300 MB):**
 
 ```bash
 docker build --build-arg INSTALL_BROWSER=0 -t friendboxd:light .
 docker run --rm -p 3000:3000 -e CRAWLER_MODE=http friendboxd:light
 ```
+
+> The `curl-impersonate` binary (real-Chrome TLS impersonation — the key anti-block measure) is bundled in **both** images by default (`INSTALL_CURL_IMPERSONATE=1`). Set `INSTALL_CURL_IMPERSONATE=0` for the leanest possible image (plain undici fallback only).
 
 **With the AI layer:**
 
