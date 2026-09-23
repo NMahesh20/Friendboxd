@@ -137,8 +137,9 @@ export function FriendDiscovery({
               <img
                 src={friend.avatar}
                 alt=""
+                loading="eager"
+                decoding="async"
                 className="h-12 w-12 rounded-full border border-white/10 object-cover"
-                loading="lazy"
               />
             ) : (
               <div className="flex h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-base-700 font-display text-lg font-semibold text-zinc-300">

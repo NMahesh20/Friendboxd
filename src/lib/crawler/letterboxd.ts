@@ -386,6 +386,26 @@ function hasNextPage(html: string): boolean {
   return next.length > 0 && !(next.attr('class') ?? '').includes('disabled');
 }
 
+/**
+ * Run an async fn over `items` with at most `limit` concurrent executions.
+ * The shared sliding-window rate limiter still bounds the aggregate request
+ * rate — concurrency just hides per-request latency behind the limiter's
+ * spacing, so a friends crawl finishes in wall-clock ~(slots × spacing)
+ * instead of adding every network round-trip on top.
+ */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 async function collectPaginated<T>(
   buildUrl: (page: number) => string,
   parse: (html: string) => T[],
@@ -496,36 +516,46 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
     lists: userLists,
   };
 
-  // 4. Friends' films (capped). Skipped in light mode (matchTaste=false):
+  // 4. Friends' films (capped). Crawled in parallel (small concurrency) so
+  //    the friends' lists don't serially add up to most of the request
+  //    budget on budget hosts like Render — the global rate limiter still
+  //    enforces politeness. Skipped in light mode (matchTaste=false):
   //    friends are discovered but their watchlists aren't crawled, so the
   //    analyze step stays fast.
   const friends: Friend[] = [];
-  const seen = new Set<string>();
-  for (const f of following.slice(0, maxFriends)) {
-    if (seen.has(f.id)) continue;
-    seen.add(f.id);
-    if (opts.matchTaste === false) {
-      friends.push({ id: f.id, name: f.name, avatar: f.avatar, films: [] });
-      continue;
+  {
+    const seen = new Set<string>();
+    const targets: { id: string; name: string; avatar?: string }[] = [];
+    for (const f of following) {
+      if (seen.has(f.id)) continue;
+      seen.add(f.id);
+      targets.push(f);
+      if (targets.length >= maxFriends) break;
     }
-    try {
-      const films = await collectPaginated(
-        (p) => `${BASE}/${f.id}/films/page/${p}/`,
-        parseFilmsPage,
-        Math.min(maxPages, 1),
-        `${BASE}/${username}/following/`,
-      );
-      friends.push({
-        id: f.id,
-        name: f.name,
-        avatar: f.avatar,
-        films: films.slice(0, maxFilms),
-      });
-    } catch (err) {
-      // Private / blocked friend — keep them but mark unavailable.
-      friends.push({ id: f.id, name: f.name, avatar: f.avatar, films: [], unavailable: true });
-    }
-    await sleep(crawlerConfig.delayMs);
+    friends.push(
+      ...(await mapLimit(targets, 3, async (f) => {
+        if (opts.matchTaste === false) {
+          return { id: f.id, name: f.name, avatar: f.avatar, films: [] };
+        }
+        try {
+          const films = await collectPaginated(
+            (p) => `${BASE}/${f.id}/films/page/${p}/`,
+            parseFilmsPage,
+            Math.min(maxPages, 1),
+            `${BASE}/${username}/following/`,
+          );
+          return {
+            id: f.id,
+            name: f.name,
+            avatar: f.avatar,
+            films: films.slice(0, maxFilms),
+          };
+        } catch (err) {
+          // Private / blocked friend — keep them but mark unavailable.
+          return { id: f.id, name: f.name, avatar: f.avatar, films: [], unavailable: true };
+        }
+      })),
+    );
   }
 
   return { user, friends, warnings, blocked: false };
@@ -591,12 +621,13 @@ export async function crawlFriendGenreFilms(
 
 /**
  * Enrich a set of films with genre data (and real posters) by visiting
- * their film pages. Fetches films missing genres OR still carrying the
- * empty poster placeholder, up to `limit`.
+ * their film pages. Fetches films missing genres OR missing/placeholder
+ * posters (list pages only ship the empty placeholder, so most films need
+ * this), up to `limit`.
  */
 export async function enrichFilmsWithGenres(films: Film[], limit = 20): Promise<Film[]> {
   const missing = films
-    .filter((f) => f.genres.length === 0 || isEmptyPoster(f.poster))
+    .filter((f) => f.genres.length === 0 || !f.poster || isEmptyPoster(f.poster))
     .slice(0, limit);
   const bySlug = new Map<string, Film>();
   for (const f of films) bySlug.set(f.slug, f);

@@ -51,15 +51,21 @@ function int(value: string | undefined, fallback: number): number {
 export const crawlerConfig: CrawlerConfig = {
   mode: (process.env.CRAWLER_MODE as CrawlerConfig['mode']) || 'auto',
   maxPages: int(process.env.CRAWLER_MAX_PAGES, 3),
-  delayMs: int(process.env.CRAWLER_DELAY_MS, 500),
+  // Small inter-page gap; the global rate limiter is the real throttle.
+  delayMs: int(process.env.CRAWLER_DELAY_MS, 200),
   timeoutMs: int(process.env.CRAWLER_TIMEOUT_MS, 20000),
   maxFilms: int(process.env.CRAWLER_MAX_FILMS, 200),
   maxFriends: int(process.env.CRAWLER_MAX_FRIENDS, 20),
   // The user's own watchlist is the exclusion set, so crawl it deeper
   // than friends' lists to avoid recommending already-watched films.
-  maxUserPages: int(process.env.CRAWLER_MAX_USER_PAGES, 8),
-  // Polite rate limit: 2 requests per 10s by default.
-  rateMax: int(process.env.CRAWLER_RATE_MAX, 2),
+  // (5 pages ≈ 150 films — keeps the analyze call inside Render's ~60s
+  // request budget instead of eating a third of it on the exclusion set.)
+  maxUserPages: int(process.env.CRAWLER_MAX_USER_PAGES, 5),
+  // Polite rate limit default. 8 per 10s (≈1.25s/request sustained) is safe
+  // with the TLS-impersonating transport + warm-up flow (verified live) and
+  // keeps a full analyze+friends crawl inside a serverless request budget.
+  // Bump down (CRAWLER_RATE_MAX=2) if you see 403s on a particular IP.
+  rateMax: int(process.env.CRAWLER_RATE_MAX, 8),
   rateWindowMs: int(process.env.CRAWLER_RATE_WINDOW_MS, 10000),
   // Lazy-loaded posters: wait up to 4s for a real poster to appear in the
   // browser (adaptive — usually finishes well before the cap). Scroll steps

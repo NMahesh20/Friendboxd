@@ -36,8 +36,11 @@ export async function POST(req: NextRequest) {
   const genre = typeof body.genre === 'string' ? body.genre : '';
 
   try {
-    const { candidates, aiUsed } = await enrichWithAi(body.candidates, [], genre);
-    return NextResponse.json({ candidates, aiUsed });
+    const { candidates, aiUsed, aiError } = await enrichWithAi(body.candidates, [], genre);
+    // Detailed failure reason stays in the server log; the dashboard shows
+    // a generic message ("AI refine is temporarily unavailable…").
+    if (aiError) console.warn('[api/refine] AI unavailable:', aiError);
+    return NextResponse.json({ candidates, aiUsed, aiError });
   } catch (err) {
     console.error('[api/refine]', err);
     return NextResponse.json(

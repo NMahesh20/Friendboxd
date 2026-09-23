@@ -198,12 +198,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function fetchImpersonated(
   url: string,
   headers: Record<string, string>,
-  opts: { proxy?: string; timeoutMs?: number } = {},
+  opts: { proxy?: string; timeoutMs?: number; saveCookies?: boolean } = {},
 ): Promise<ImpersonatedResult> {
   const transport = await resolveTransport();
   if (!transport) throw new ImpersonateTransportError('curl-impersonate unavailable');
 
   const timeoutMs = opts.timeoutMs ?? 20000;
+  // Every request READS the shared jar (`-b`). Only the warm-up writes it
+  // (`-c`): the session cookie is primed there, and later requests may run
+  // concurrently (parallel friend crawls) — letting each one rewrite the
+  // on-disk jar would race and could drop the primed cookie mid-crawl.
+  const saving = opts.saveCookies === true;
   const args = [
     '--silent',
     '--show-error',
@@ -215,9 +220,8 @@ export async function fetchImpersonated(
     String(Math.max(1, Math.ceil(timeoutMs / 1000))),
     '-b',
     transport.cookieJar,
-    '-c',
-    transport.cookieJar,
   ];
+  if (saving) args.push('-c', transport.cookieJar);
   if (opts.proxy) args.push('--proxy', opts.proxy);
   for (const [name, value] of Object.entries(headers)) {
     args.push('-H', `${name}: ${value}`);

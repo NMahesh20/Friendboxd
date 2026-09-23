@@ -1,11 +1,11 @@
 // ─── Sliding-window rate limiter ────────────────────────────────────────
 // Keeps the crawler polite to Letterboxd: at most `rateMax` requests per
-// `rateWindowMs` (default 2 per 10s). Every Letterboxd request funnels
+// `rateWindowMs` (default 8 per 10s). Every Letterboxd request funnels
 // through this singleton before it is sent, regardless of whether the
 // HTTP or stealth-browser strategy is used.
 //
 // Tune via env vars:
-//   CRAWLER_RATE_MAX        (default 2)
+//   CRAWLER_RATE_MAX        (default 8)
 //   CRAWLER_RATE_WINDOW_MS  (default 10000)
 
 import { crawlerConfig } from '@/lib/config';

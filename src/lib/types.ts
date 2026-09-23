@@ -111,6 +111,8 @@ export interface RecommendationResult {
   aiEnabled: boolean;
   /** True when the pool was too small to be meaningful. */
   degraded?: boolean;
+  /** Human-readable reason the AI layer failed (null = OK / no key). */
+  aiError?: string | null;
 }
 
 /** Result of the analyze step. */

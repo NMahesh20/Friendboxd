@@ -153,11 +153,12 @@ async function requestOnce(
   headers: Record<string, string>,
   proxy: string | undefined,
   timeoutMs: number,
+  saveCookies = false,
 ): Promise<HttpResult> {
   const transport = await resolveTransport();
   if (transport) {
     try {
-      const res = await fetchImpersonated(url, headers, { proxy, timeoutMs });
+      const res = await fetchImpersonated(url, headers, { proxy, timeoutMs, saveCookies });
       return toResult(res.html, res.status, res.finalUrl);
     } catch (err) {
       if (err instanceof ImpersonateTransportError) {
@@ -221,10 +222,12 @@ export async function fetchHtml(url: string, opts: { referer?: string } = {}): P
       // 1. Prime the origin with a top-level navigation (page-load headers,
       //    sec-fetch-site: none) on this session's first visit, so the
       //    "primed" session cookie exists when the real request follows.
+      //    This is the one request that writes the cookie jar (later
+      //    requests may run concurrently and only read it).
       const homeUrl = `${origin}/`;
       if (!warmedOrigins.has(origin) && url !== homeUrl) {
         await rateLimiter.acquire();
-        await requestOnce(homeUrl, fp.pageLoadHeaders(), proxy, timeoutMs);
+        await requestOnce(homeUrl, fp.pageLoadHeaders(), proxy, timeoutMs, true);
         warmedOrigins.add(origin);
       }
 

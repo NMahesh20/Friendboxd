@@ -22,7 +22,7 @@ docker run --rm -d -p 3000:3000 oblivion2098/friendboxd:latest
 - **Friend weightage** — pick up to 5 friends and dial each one's influence from 0–100% (50 = neutral, 100 = 2×, 0 = excluded).
 - **Genre / mood filter** — ask for a vibe ("something cozy", "edge-of-your-seat thriller") and the engine re-ranks accordingly.
 - **Real Letterboxd data** — every recommendation card shows the official synopsis, tagline, director, and runtime scraped from the film's Letterboxd page.
-- **AI layer (optional)** — an OpenAI-compatible model writes a one-line reason and "more like this" picks. Falls back to deterministic reasons when no API key is set, so the app works with or without AI.
+- **AI layer (optional)** — an OpenAI-compatible model writes a one-line reason and "more like this" picks. Falls back to deterministic reasons when no API key is set or the call fails (e.g. an OpenAI account out of credits — the app now surfaces the actual reason instead of failing silently), so the app works with or without AI.
 - **Session persistence** — your username, friends, weights, and results live in `sessionStorage`, so refreshing resumes exactly where you left off.
 - **Graceful degradation** — if Letterboxd blocks crawling, the app falls back to manual friend entry instead of breaking.
 - **Dark cinematic UI** — Letterboxd-inspired dark theme with gold accents, poster grids, and smooth animations.
@@ -67,7 +67,7 @@ Two transports, in order:
 1. **`curl-impersonate`** (`impersonate.ts`) — a patched curl whose TLS ClientHello / HTTP2 fingerprint is byte-compatible with real Chrome (the same engine the Python `curl_cffi` module wraps, which is what defeats header+TLS fingerprinting WAFs). Up to 3 randomly sampled profiles are tried against the binary to find one it supports.
 2. **`undici`** (Next.js fetch / proxied) as a dependency-free fallback when the binary isn't installed.
 
-A **sliding-window rate limiter** caps requests at 2 per 10 seconds by default (tunable via `CRAWLER_RATE_MAX` / `CRAWLER_RATE_WINDOW_MS`), with optional HTTP proxy rotation via `PROXY_POOL`. When Letterboxd responds with 403/429 or a challenge page, it falls back to a headless Chromium via Playwright (`browser.ts`, which shares the same session fingerprint). Parsers are written defensively with fallback selectors and responses are cached to disk (1h TTL).
+A **sliding-window rate limiter** caps requests at 8 per 10 seconds by default (tunable via `CRAWLER_RATE_MAX` / `CRAWLER_RATE_WINDOW_MS`) — safe with the TLS-impersonating transport, and friends' watchlists are crawled in parallel (concurrency 3) so a full analyze stays inside serverless request budgets instead of serially stacking up seconds. When Letterboxd responds with 403/429 or a challenge page, it falls back to a headless Chromium via Playwright (`browser.ts`, which shares the same session fingerprint). Parsers are written defensively with fallback selectors and responses are cached to disk (1h TTL).
 
 ### 2. Taste matching (`src/lib/scoring/taste-match.ts`)
 Compares your films against each friend's using weighted signals:
@@ -84,7 +84,7 @@ Compares your films against each friend's using weighted signals:
 Pulls films from your selected friends' watchlists, excludes ones you've already seen, and scores each by `friend match score × your custom weight`.
 
 ### 4. AI layer (`src/lib/ai/recommender.ts`)
-Sends the top candidates to an OpenAI-compatible API for a one-line reason + "more like this" suggestions. Without an API key it uses deterministic reasons, so the app never depends on AI.
+Sends the top candidates to an OpenAI-compatible API for a one-line reason + "more like this" suggestions. Without an API key it uses deterministic reasons, so the app never depends on AI. If the API call fails (missing credits, bad key, model not allowed), the failure reason is surfaced in the UI and returned as `aiError` from `/api/refine`.
 
 ### 5. State (`src/hooks/useSession.ts`)
 Everything persists in `sessionStorage` — username, selected friends, weights, genre, and results.
@@ -135,12 +135,12 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used for reasons / "more like this". |
 | `CRAWLER_MODE` | `auto` | `auto` \| `http` \| `browser`. |
 | `CRAWLER_MAX_PAGES` | `3` | Max pages crawled per profile. |
-| `CRAWLER_DELAY_MS` | `500` | Polite delay between requests. |
+| `CRAWLER_DELAY_MS` | `200` | Small gap between pages; the rate limiter is the real throttle. |
 | `CRAWLER_TIMEOUT_MS` | `20000` | Per-request timeout. |
 | `CRAWLER_MAX_FILMS` | `200` | Max films considered per profile. |
 | `CRAWLER_MAX_FRIENDS` | `20` | Max friends discovered. |
-| `CRAWLER_MAX_USER_PAGES` | `8` | Pages crawled for the user's own watchlist (exclusion set). |
-| `CRAWLER_RATE_MAX` | `2` | Max requests per sliding window (rate limiter). |
+| `CRAWLER_MAX_USER_PAGES` | `5` | Pages crawled for the user's own watchlist (exclusion set; ~150 films). |
+| `CRAWLER_RATE_MAX` | `8` | Max requests per sliding window (rate limiter; safe with TLS impersonation — lower it if you see 403s on one IP). |
 | `CRAWLER_RATE_WINDOW_MS` | `10000` | Rate-limiter window length (10s). |
 | `CRAWLER_POSTER_WAIT_MS` | `4000` | Max wait for lazy-loaded posters in the browser strategy (adaptive, capped). |
 | `CRAWLER_BROWSER_SCROLL_DELAY_MS` | `120` | Delay between scroll steps when triggering lazy loading. |

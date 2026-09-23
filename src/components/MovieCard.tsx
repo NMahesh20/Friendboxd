@@ -34,7 +34,10 @@ export function MovieCard({
           <img
             src={film.poster}
             alt={`${film.title} poster`}
-            loading="lazy"
+            // Eager + async: posters come from a slow crawl, so lazy loading
+            // here just delays images that should already be visible.
+            loading="eager"
+            decoding="async"
             className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
           />
         ) : (
@@ -75,12 +78,13 @@ export function MovieCard({
           </p>
         </div>
 
-        {/* {!aiEnabled && ai?.reason && (
+        {/* AI / deterministic pick reason (shown whenever we have one) */}
+        {ai?.reason && (
           <div className="flex items-start gap-1.5">
-            <AiBadge className="mt-0.5" />
+            {aiEnabled && <AiBadge className="mt-0.5 shrink-0" />}
             <p className="line-clamp-2 text-xs leading-relaxed text-zinc-400">{ai.reason}</p>
           </div>
-        )} */}
+        )}
 
         {/* Influenced by */}
         <div className="mt-auto flex items-center gap-1.5 pt-1">

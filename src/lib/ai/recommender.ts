@@ -16,10 +16,38 @@ interface AiEnrichment {
 
 // ─── OpenAI call ────────────────────────────────────────────────────────
 
-async function callOpenAi(prompt: string): Promise<string | null> {
-  if (!aiConfig.apiKey) return null;
+interface OpenAiResult {
+  content: string | null;
+  /** Human-readable reason the call failed, or null on success. */
+  error: string | null;
+}
+
+/** Map a failed OpenAI response to a message the user can act on. */
+function apiErrorMessage(status: number, body: string): string {
+  const code = (body.match(/"code"\s*:\s*"([^"]+)"/) ?? [])[1] ?? '';
+  const type = (body.match(/"type"\s*:\s*"([^"]+)"/) ?? [])[1] ?? '';
+  const message = (body.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/) ?? [])[1] ?? '';
+  if (status === 429 || /credit|quota|insufficient_quota/i.test(`${code} ${type}`)) {
+    return 'your OpenAI account has no credits left — add credits at platform.openai.com/settings/organization/billing.';
+  }
+  if (status === 401 || /invalid_api_key|auth/i.test(`${code} ${type}`)) {
+    return 'OpenAI rejected the API key (invalid_api_key) — check OPENAI_API_KEY.';
+  }
+  if (status === 404 || /model_not_found/i.test(`${code} ${type}`)) {
+    return 'the configured OpenAI model is not available to this key — check OPENAI_MODEL or model access.';
+  }
+  if (status === 403) {
+    return `OpenAI denied the request (HTTP 403) — the key may be missing "Chat Completions: write" permission.`;
+  }
+  if (message) return `OpenAI error: ${message}`;
+  return `OpenAI request failed (HTTP ${status}).`;
+}
+
+async function callOpenAi(prompt: string): Promise<OpenAiResult> {
+  if (!aiConfig.apiKey) return { content: null, error: null };
+  let res: Response;
   try {
-    const res = await fetch(`${aiConfig.baseUrl}/chat/completions`, {
+    res = await fetch(`${aiConfig.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -43,16 +71,18 @@ Rules:
         ],
       }),
     });
-    if (!res.ok) {
-      console.warn('[ai] API returned status', res.status);
-      return null;
-    }
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content ?? null;
   } catch (err) {
     console.warn('[ai] request failed:', (err as Error).message);
-    return null;
+    return { content: null, error: `could not reach the OpenAI API (${(err as Error).message})` };
   }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.warn(`[ai] API error ${res.status}:`, body.slice(0, 500));
+    return { content: null, error: apiErrorMessage(res.status, body) };
+  }
+  const data = await res.json().catch(() => null);
+  if (!data) return { content: null, error: 'OpenAI returned an unparseable response.' };
+  return { content: data.choices?.[0]?.message?.content ?? null, error: null };
 }
 
 // ─── Deterministic fallback ─────────────────────────────────────────────
@@ -79,32 +109,38 @@ function deterministicEnrich(candidate: CandidateMovie): AiEnrichment {
 
 /**
  * Enrich candidate movies with AI-generated explanations.
- * When the AI is unavailable, falls back to deterministic reasons.
+ * When the AI is unavailable or fails, falls back to deterministic reasons
+ * and reports the failure reason via `aiError` (null when AI succeeded or
+ * wasn't attempted with a key).
  */
 export async function enrichWithAi(
   candidates: CandidateMovie[],
   selectedMatches: TasteMatch[],
   genreMood: string,
-): Promise<{ candidates: CandidateMovie[]; aiUsed: boolean }> {
-  if (candidates.length === 0) return { candidates, aiUsed: false };
+): Promise<{ candidates: CandidateMovie[]; aiUsed: boolean; aiError: string | null }> {
+  if (candidates.length === 0) return { candidates, aiUsed: false, aiError: null };
 
   // Attempt AI call.
   const prompt = buildPrompt(candidates, genreMood);
-  const raw = await callOpenAi(prompt);
+  const { content: raw, error } = await callOpenAi(prompt);
   let aiParsed: AiEnrichment[] | null = null;
   let aiUsed = false;
 
   if (raw) {
     try {
-      // Extract JSON array from the response (may be wrapped in ```json fences).
-      const cleaned = raw.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+      // Extract the JSON array from the response — it may be wrapped in
+      // ```json fences, or have explanatory text before/after it.
+      const match = raw.match(/\[[\s\S]*\]/);
+      const cleaned = (match?.[0] ?? raw).trim();
       const parsed = JSON.parse(cleaned);
       if (Array.isArray(parsed)) {
         aiParsed = parsed;
         aiUsed = true;
+      } else {
+        console.warn('[ai] response was not a JSON array');
       }
-    } catch {
-      console.warn('[ai] could not parse response as JSON');
+    } catch (err) {
+      console.warn('[ai] could not parse response as JSON:', (err as Error).message);
     }
   }
 
@@ -113,7 +149,7 @@ export async function enrichWithAi(
     return { ...c, ai };
   });
 
-  return { candidates: enriched, aiUsed };
+  return { candidates: enriched, aiUsed, aiError: error };
 }
 
 function buildPrompt(candidates: CandidateMovie[], genreMood: string): string {

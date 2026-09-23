@@ -70,6 +70,8 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
       if (res.aiUsed) {
         setRefinedCandidates(res.candidates);
         onToast('✨ AI-refined your picks.', 'success');
+      } else if (res.aiError) {
+        onToast('AI refine is temporarily unavailable — please try again later.', 'error');
       } else {
         onToast('AI refine didn’t change anything — try again.', 'info');
       }
@@ -184,7 +186,6 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
         movie={selected}
         onClose={() => setSelected(null)}
         onMoreLikeThis={moreLikeThis}
-        aiEnabled={result.aiEnabled}
       />
     </section>
   );

@@ -60,9 +60,9 @@ export function getRecommendations(
 export function refineRecommendations(
   candidates: CandidateMovie[],
   genre: string,
-): Promise<{ candidates: CandidateMovie[]; aiUsed: boolean }> {
-  return post<{ candidates: CandidateMovie[]; aiUsed: boolean }>('/api/refine', {
-    candidates,
-    genre,
-  });
+): Promise<{ candidates: CandidateMovie[]; aiUsed: boolean; aiError?: string | null }> {
+  return post<{ candidates: CandidateMovie[]; aiUsed: boolean; aiError?: string | null }>(
+    '/api/refine',
+    { candidates, genre },
+  );
 }

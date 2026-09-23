@@ -10,13 +10,10 @@ export function MovieModal({
   movie,
   onClose,
   onMoreLikeThis,
-  aiEnabled,
 }: {
   movie: CandidateMovie | null;
   onClose: () => void;
   onMoreLikeThis: (movie: CandidateMovie) => void;
-  /** Whether an OpenAI API key is configured (hide the "needs key" badge). */
-  aiEnabled: boolean;
 }) {
   if (!movie) return null;
   const { film, ai, influencedBy, score, reasons } = movie;
@@ -140,8 +137,8 @@ export function MovieModal({
             </div>
           )}
 
-          {/* More like this */}
-          {!aiEnabled && ai?.moreLikeThis && ai.moreLikeThis.length > 0 && (
+          {/* More like this (AI-generated suggestions) */}
+          {ai?.moreLikeThis && ai.moreLikeThis.length > 0 && (
             <div className="mb-4">
               <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
                 More like this

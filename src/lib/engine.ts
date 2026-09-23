@@ -203,7 +203,7 @@ export async function recommendMovies(
   candidates = reRankByGenre(candidates, genreMood);
 
   // AI refinement.
-  const { candidates: aiCandidates, aiUsed } = await enrichWithAi(
+  const { candidates: aiCandidates, aiUsed, aiError } = await enrichWithAi(
     candidates,
     matches,
     genreMood,
@@ -230,6 +230,7 @@ export async function recommendMovies(
     aiUsed,
     aiEnabled: !!aiConfig.apiKey,
     degraded,
+    aiError,
   };
 }
 
