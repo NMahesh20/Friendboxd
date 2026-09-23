@@ -56,6 +56,11 @@ ENV NODE_ENV=production \
     # Polite rate limit: max requests per sliding window (default 2 per 10s).
     CRAWLER_RATE_MAX=2 \
     CRAWLER_RATE_WINDOW_MS=10000 \
+    # Browser-fingerprint identity: UA + Client Hints + TLS profile all use
+    # this impersonation target (chrome131 ships with curl-impersonate v2.2).
+    # CRAWLER_IMPERSONATE=chrome131 \
+    # Use the bundled curl-impersonate binary for TLS impersonation.
+    CRAWLER_TLS_IMPERSONATION=auto \
     # Ephemeral, writable cache (the repo .cache is not present here).
     CACHE_DIR=/tmp/friendboxd-cache \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -73,6 +78,24 @@ RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
       npm install --no-save playwright && \
       npx playwright install --with-deps chromium && \
       chmod -R a+rX /ms-playwright; \
+    fi
+
+# Bundle curl-impersonate (default ON): a patched curl whose TLS ClientHello
+# and HTTP2 fingerprint are byte-compatible with real Chrome. It is the exact
+# engine the Python `curl_cffi` module wraps, and it's what gets the crawler
+# past Letterboxd's header/TLS fingerprinting from datacenter IPs — plain
+# Node/OpenSSL TLS is trivially distinguishable. ~22 MB; set
+# INSTALL_CURL_IMPERSONATE=0 for the leanest possible image.
+ARG INSTALL_CURL_IMPERSONATE=1
+RUN if [ "$INSTALL_CURL_IMPERSONATE" = "1" ]; then \
+      apt-get update && \
+      apt-get install -y --no-install-recommends curl ca-certificates && \
+      curl -fsSL -o /tmp/curl-impersonate.tar.gz \
+        https://github.com/lexiforest/curl-impersonate/releases/download/v2.2.3/curl-impersonate-v2.2.3.x86_64-linux-gnu.tar.gz && \
+      tar -xzf /tmp/curl-impersonate.tar.gz -C /usr/local/bin \
+        curl-impersonate curl_chrome131 && \
+      chmod +x /usr/local/bin/curl-impersonate /usr/local/bin/curl_chrome131 && \
+      rm /tmp/curl-impersonate.tar.gz; \
     fi
 
 # Run as a non-root user.

@@ -1,7 +1,24 @@
-// ─── HTTP fetch strategy with throttling + retry ────────────────────────
-// Uses realistic browser fingerprints and polite throttling to reduce the
-// chance of being blocked. Falls back to the stealth browser strategy
-// when the server responds with 403/429 or a challenge page.
+// ─── HTTP fetch strategy with browser fingerprints + throttling + retry ──
+// Uses a coherent per-session browser fingerprint (stable UA + Client Hints
+// matched to one TLS impersonation target, see fingerprint.ts) and polite
+// throttling to reduce the chance of being blocked.
+//
+// Transport order:
+//   1. curl-impersonate when available — the same engine the Python
+//      `curl_cffi` module wraps. It sends a real Chrome TLS ClientHello /
+//      HTTP2 fingerprint (Node's OpenSSL TLS is trivially distinguishable).
+//   2. undici fetch (Next.js-patched or proxied) as a dependency-free
+//      fallback when the binary isn't installed.
+//
+// Visiting pattern (mirrors a real browser session):
+//   - First request to an origin is a TOP-LEVEL navigation: page-load
+//     headers, sec-fetch-site: none, Cache-Control: max-age=0. This primes
+//     the session cookie, which is replayed on every later request (the
+//     impersonation transport keeps a per-process cookie jar).
+//   - Every subsequent request is an IN-SITE navigation: same-origin
+//     sec-fetch-* with the previous page as Referer.
+//   Letterboxd gates profile paths against cold `site:none` hits, so this
+//   warm-up + referer flow is what gets the crawl through (verified live).
 //
 // Proxy support: set PROXY_POOL to a comma-separated list of proxies, e.g.
 //   PROXY_POOL="http://user:pass@host:8080,http://host2:8080"
@@ -10,135 +27,36 @@
 
 import { crawlerConfig, proxyConfig } from '@/lib/config';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { Fingerprint, getImpersonate, sessionFingerprint } from './fingerprint';
+import { fetchImpersonated, ImpersonateTransportError, resolveTransport } from './impersonate';
+import { rateLimiter } from './rate-limiter';
 
-// ─── Browser fingerprints ───────────────────────────────────────────────
-// Each entry pairs a realistic User-Agent with the matching client-hint
-// (sec-ch-ua*) headers a real browser of that UA would send. Firefox and
-// Safari don't send sec-ch-ua, so those entries leave it empty.
+// ─── Session fingerprint ────────────────────────────────────────────────
+// One identity for the whole crawl session. Rotating UA/hints per request —
+// as the old code did — is itself a bot signal: a real browser keeps one
+// identity for the session, and primed cookies must be replayed under it.
+// The identity is locked to the impersonation target the local
+// curl-impersonate binary actually supports, so UA + Client Hints + TLS
+// profile always stay coherent.
+let session: Fingerprint | null = null;
 
-interface Fingerprint {
-  userAgent: string;
-  platform: string;
-  platformVersion: string;
-  arch: string;
-  bitness: string;
-  secChUa: string;
-  secChUaFull: string;
-}
-
-const FINGERPRINTS: Fingerprint[] = [
-  {
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-    platform: 'Windows',
-    platformVersion: '15.0.0',
-    arch: 'x86',
-    bitness: '64',
-    secChUa: '"Not)A;Brand";v="99", "Google Chrome";v="128", "Chromium";v="128"',
-    secChUaFull:
-      '"Not)A;Brand";v="99.0.0.0", "Google Chrome";v="128.0.6613.84", "Chromium";v="128.0.6613.84"',
-  },
-  {
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-    platform: 'macOS',
-    platformVersion: '14.5.0',
-    arch: 'x86',
-    bitness: '64',
-    secChUa: '"Not)A;Brand";v="99", "Google Chrome";v="127", "Chromium";v="127"',
-    secChUaFull:
-      '"Not)A;Brand";v="99.0.0.0", "Google Chrome";v="127.0.6533.99", "Chromium";v="127.0.6533.99"',
-  },
-  {
-    userAgent:
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    platform: 'Linux',
-    platformVersion: '6.5.0',
-    arch: 'x86',
-    bitness: '64',
-    secChUa: '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
-    secChUaFull:
-      '"Not/A)Brand";v="8.0.0.0", "Chromium";v="126.0.6478.127", "Google Chrome";v="126.0.6478.127"',
-  },
-  {
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0',
-    platform: 'Windows',
-    platformVersion: '15.0.0',
-    arch: 'x86',
-    bitness: '64',
-    secChUa: '"Not)A;Brand";v="99", "Microsoft Edge";v="128", "Chromium";v="128"',
-    secChUaFull:
-      '"Not)A;Brand";v="99.0.0.0", "Microsoft Edge";v="128.0.2739.42", "Chromium";v="128.0.6613.84"',
-  },
-  {
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0',
-    platform: 'Windows',
-    platformVersion: '15.0.0',
-    arch: 'x86',
-    bitness: '64',
-    secChUa: '',
-    secChUaFull: '',
-  },
-  {
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
-    platform: 'macOS',
-    platformVersion: '14.5.0',
-    arch: 'x86',
-    bitness: '64',
-    secChUa: '',
-    secChUaFull: '',
-  },
-];
-
-const ACCEPT_LANGUAGES = [
-  'en-US,en;q=0.9',
-  'en-GB,en;q=0.9',
-  'en-US,en;q=0.9,es;q=0.8',
-  'en-CA,en;q=0.9,fr;q=0.8',
-];
-
-function pickFingerprint(): Fingerprint {
-  return FINGERPRINTS[Math.floor(Math.random() * FINGERPRINTS.length)];
-}
-
-function pickAcceptLanguage(): string {
-  return ACCEPT_LANGUAGES[Math.floor(Math.random() * ACCEPT_LANGUAGES.length)];
-}
-
-function buildHeaders(referer?: string): Record<string, string> {
-  const fp = pickFingerprint();
-  const headers: Record<string, string> = {
-    'User-Agent': fp.userAgent,
-    Accept:
-      'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': pickAcceptLanguage(),
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Cache-Control': 'no-cache',
-    Pragma: 'no-cache',
-    Referer: referer ?? 'https://letterboxd.com/',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-Fetch-User': '?1',
-    Connection: 'keep-alive',
-    Priority: 'u=0, i',
-  };
-  // Chromium-based fingerprints also send client hints.
-  if (fp.secChUa) {
-    headers['sec-ch-ua'] = fp.secChUa;
-    headers['sec-ch-ua-mobile'] = '?0';
-    headers['sec-ch-ua-platform'] = `"${fp.platform}"`;
-    headers['sec-ch-ua-platform-version'] = `"${fp.platformVersion}"`;
-    headers['sec-ch-ua-full-version-list'] = fp.secChUaFull;
-    headers['sec-ch-ua-arch'] = `"${fp.arch}"`;
-    headers['sec-ch-ua-bitness'] = `"${fp.bitness}"`;
-    headers['sec-ch-ua-model'] = '""';
+async function ensureSession(): Promise<Fingerprint> {
+  if (!session) {
+    const transport = await resolveTransport();
+    session = sessionFingerprint(transport ? transport.target : getImpersonate('letterboxd'));
   }
-  return headers;
+  return session;
+}
+
+// Origins primed with a top-level warm-up GET this session.
+const warmedOrigins = new Set<string>();
+
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
 }
 
 export interface HttpResult {
@@ -192,13 +110,102 @@ async function doFetch(
 }
 
 /**
- * Fetch a URL with throttling, retries, realistic fingerprints and optional
- * proxy rotation. Throws HttpFetchError on failure.
+ * Detect challenge / bot pages. Be specific: Cloudflare injects a
+ * `/cdn-cgi/challenge-platform/...` script on ALL pages (even real ones), so
+ * match only markers that appear on actual challenge pages (the challenge
+ * form / error details), or the challenge <title>.
+ */
+function isChallengePage(html: string): boolean {
+  const title = (html.match(/<title[^>]*>([^<]*)<\/title>/i) ?? [])[1] ?? '';
+  return (
+    html.length < 500 ||
+    /just a moment|attention required/i.test(title) ||
+    /cf-challenge-form|challenge-form|cf-error-details|challenge-running|turnstile-container|cf-turnstile-form|challenge-stage|cf_chl_opt|challenge-content/i.test(
+      html,
+    )
+  );
+}
+
+/** Normalize an HTTP response into HttpResult or throw HttpFetchError. */
+function toResult(html: string, status: number, finalUrl: string): HttpResult {
+  if (status === 403 || status === 429) {
+    throw new HttpFetchError(`Blocked by Letterboxd (HTTP ${status})`, status, true);
+  }
+  if (status === 404) {
+    throw new HttpFetchError('Not found (HTTP 404)', 404, false);
+  }
+  if (status < 200 || status >= 300) {
+    throw new HttpFetchError(`Unexpected status ${status}`, status, true);
+  }
+  if (isChallengePage(html)) {
+    throw new HttpFetchError('Challenge page detected', 403, true);
+  }
+  return { html, status, finalUrl };
+}
+
+/**
+ * Single HTTP request via the best available transport. Tries the
+ * TLS-impersonating curl-impersonate binary first, then falls back to
+ * undici if the binary is missing or the request dies on the transport.
+ */
+async function requestOnce(
+  url: string,
+  headers: Record<string, string>,
+  proxy: string | undefined,
+  timeoutMs: number,
+): Promise<HttpResult> {
+  const transport = await resolveTransport();
+  if (transport) {
+    try {
+      const res = await fetchImpersonated(url, headers, { proxy, timeoutMs });
+      return toResult(res.html, res.status, res.finalUrl);
+    } catch (err) {
+      if (err instanceof ImpersonateTransportError) {
+        console.warn('[crawler] impersonated fetch failed, undici fallback:', (err as Error).message);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await doFetch(
+      url,
+      {
+        signal: controller.signal,
+        redirect: 'follow',
+        // Next.js patches global fetch with its own cache; bypass it so we
+        // always hit Letterboxd fresh (and never get a stale 403).
+        cache: 'no-store',
+        headers,
+      },
+      proxy,
+    );
+    const html = await res.text();
+    return toResult(html, res.status, res.url);
+  } catch (err) {
+    if (err instanceof HttpFetchError) throw err;
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new HttpFetchError('Request timed out', 0, true);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch a URL with throttling, retries, a coherent browser fingerprint and
+ * optional proxy rotation + TLS impersonation. Throws HttpFetchError on
+ * failure.
  */
 export async function fetchHtml(url: string, opts: { referer?: string } = {}): Promise<HttpResult> {
   const { timeoutMs, delayMs } = crawlerConfig;
   const proxies = proxyConfig.pool;
   const maxAttempts = 3;
+  const origin = originOf(url);
 
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -208,48 +215,24 @@ export async function fetchHtml(url: string, opts: { referer?: string } = {}): P
     // Rotate through the proxy pool on each attempt (p1, p2, p3, p1…).
     const proxy = proxies.length > 0 ? proxies[(attempt - 1) % proxies.length] : undefined;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await doFetch(
-        url,
-        {
-          signal: controller.signal,
-          redirect: 'follow',
-          // Next.js patches global fetch with its own cache; bypass it so we
-          // always hit Letterboxd fresh (and never get a stale 403).
-          cache: 'no-store',
-          headers: buildHeaders(opts.referer),
-        },
-        proxy,
-      );
+      const fp = await ensureSession();
 
-      if (res.status === 403 || res.status === 429) {
-        throw new HttpFetchError(`Blocked by Letterboxd (HTTP ${res.status})`, res.status, true);
-      }
-      if (res.status === 404) {
-        throw new HttpFetchError('Not found (HTTP 404)', 404, false);
-      }
-      if (!res.ok) {
-        throw new HttpFetchError(`Unexpected status ${res.status}`, res.status, true);
+      // 1. Prime the origin with a top-level navigation (page-load headers,
+      //    sec-fetch-site: none) on this session's first visit, so the
+      //    "primed" session cookie exists when the real request follows.
+      const homeUrl = `${origin}/`;
+      if (!warmedOrigins.has(origin) && url !== homeUrl) {
+        await rateLimiter.acquire();
+        await requestOnce(homeUrl, fp.pageLoadHeaders(), proxy, timeoutMs);
+        warmedOrigins.add(origin);
       }
 
-      const html = await res.text();
-      // Detect challenge / bot pages. Be specific: Cloudflare injects a
-      // `/cdn-cgi/challenge-platform/...` script on ALL pages (even real
-      // ones), so match only markers that appear on actual challenge pages
-      // (the challenge form / error details), or the challenge <title>.
-      const title = (html.match(/<title[^>]*>([^<]*)<\/title>/i) ?? [])[1] ?? '';
-      const isChallenge =
-        html.length < 500 ||
-        /just a moment|attention required/i.test(title) ||
-        /cf-challenge-form|challenge-form|cf-error-details|challenge-running|turnstile-container|cf-turnstile-form|challenge-stage|cf_chl_opt|challenge-content/i.test(
-          html,
-        );
-      if (isChallenge) {
-        throw new HttpFetchError('Challenge page detected', 403, true);
-      }
-      return { html, status: res.status, finalUrl: res.url };
+      // 2. The real request: an in-site navigation (same-origin + Referer)
+      //    when a referer is given, else a top-level page load.
+      await rateLimiter.acquire();
+      const headers = opts.referer ? fp.navigationHeaders(opts.referer) : fp.pageLoadHeaders();
+      return await requestOnce(url, headers, proxy, timeoutMs);
     } catch (err) {
       lastError = err;
       if (err instanceof HttpFetchError && !err.retriable) throw err;
@@ -262,8 +245,6 @@ export async function fetchHtml(url: string, opts: { referer?: string } = {}): P
           (err as Error).message,
         );
       }
-    } finally {
-      clearTimeout(timer);
     }
   }
   throw lastError instanceof Error

@@ -1,9 +1,12 @@
 // ─── Stealth browser strategy (Playwright) ──────────────────────────────
 // Launches a headless Chromium with stealth hardening: automation flags
-// removed, realistic UA/viewport/locale, and navigator.webdriver masked.
+// removed, a coherent per-session fingerprint (UA + Client Hints pulled
+// from fingerprint.ts — identical to the HTTP strategy's identity),
+// realistic viewport/locale/timezone, and navigator.webdriver masked.
 // Used as a fallback when plain HTTP is blocked, or when CRAWLER_MODE=browser.
 
 import { crawlerConfig, proxyConfig } from '@/lib/config';
+import { getImpersonate, sessionFingerprint } from './fingerprint';
 
 // Playwright is a heavy dependency; import lazily so the app still boots
 // if the browser binary isn't installed yet.
@@ -27,6 +30,11 @@ async function getBrowser(): Promise<Browser> {
         '--no-sandbox',
         '--disable-gpu',
         '--disable-features=IsolateOrigins,site-per-process',
+        // Match the browser window to the viewport set on the context.
+        '--window-size=1366,900',
+        '--lang=en-US',
+        '--no-first-run',
+        '--no-default-browser-check',
       ],
     });
   })().catch((err) => {
@@ -115,15 +123,21 @@ export async function fetchHtmlStealth(
   let browser: Browser | null = null;
   try {
     browser = await getBrowser();
+    // Share the HTTP strategy's session identity so the whole crawl presents
+    // one coherent fingerprint: same UA + Client Hints across strategies.
+    // Explicit client hints matter here — Chromium would otherwise send its
+    // OWN build's sec-ch-ua (e.g. Chromium;v="128") next to our Chrome 131
+    // UA, which is exactly the incoherence WAFs flag.
+    const fp = sessionFingerprint(getImpersonate('letterboxd'));
     const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+      userAgent: fp.userAgent,
       viewport: { width: 1366, height: 900 },
       locale: 'en-US',
       timezoneId: 'America/New_York',
       colorScheme: 'dark',
       extraHTTPHeaders: {
-        'Accept-Language': 'en-US,en;q=0.9',
+        ...fp.commonHeaders,
+        'Accept-Language': 'en-US,en;q=0.5',
       },
     });
     // Mask automation signals.
