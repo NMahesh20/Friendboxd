@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { enrichWithAi } from '@/lib/ai/recommender';
+import { suggestMoreFilms } from '@/lib/ai/recommender';
 import { aiConfig } from '@/lib/config';
 import type { CandidateMovie } from '@/lib/types';
 
@@ -7,12 +7,13 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 /**
- * POST /api/refine
+ * POST /api/suggest-more
  * Body: { candidates: CandidateMovie[], genre: string }
  *
- * Re-runs the AI layer on the current picks to refresh AI-generated reasons
- * and "more like this" suggestions. Requires a Gemini API key — the client
- * disables the button without one, and we guard here too.
+ * Asks Gemini for a few NEW films similar to the current picks, resolves
+ * real posters/ratings from Letterboxd, and returns them ready to append
+ * to the results grid. Requires a Gemini API key (button is hidden without
+ * one, and we guard here too).
  */
 export async function POST(req: NextRequest) {
   let body: { candidates?: CandidateMovie[]; genre?: string };
@@ -23,12 +24,12 @@ export async function POST(req: NextRequest) {
   }
 
   if (!Array.isArray(body.candidates) || body.candidates.length === 0) {
-    return NextResponse.json({ error: 'No candidates to refine.' }, { status: 400 });
+    return NextResponse.json({ error: 'No candidates to base suggestions on.' }, { status: 400 });
   }
 
   if (!aiConfig.apiKey) {
     return NextResponse.json(
-      { error: 'Add a Gemini API key to enable AI refine.' },
+      { error: 'Add a Gemini API key to enable AI suggestions.' },
       { status: 400 },
     );
   }
@@ -36,15 +37,15 @@ export async function POST(req: NextRequest) {
   const genre = typeof body.genre === 'string' ? body.genre : '';
 
   try {
-    const { candidates, aiUsed, aiError } = await enrichWithAi(body.candidates, [], genre);
+    const { movies, aiUsed, aiError } = await suggestMoreFilms(body.candidates, genre);
     // Detailed failure reason stays in the server log; the dashboard shows
-    // a generic message ("AI refine is temporarily unavailable…").
-    if (aiError) console.warn('[api/refine] AI unavailable:', aiError);
-    return NextResponse.json({ candidates, aiUsed, aiError });
+    // a generic message.
+    if (aiError) console.warn('[api/suggest-more] AI unavailable:', aiError);
+    return NextResponse.json({ movies, aiUsed, aiError });
   } catch (err) {
-    console.error('[api/refine]', err);
+    console.error('[api/suggest-more]', err);
     return NextResponse.json(
-      { error: (err as Error).message || 'Could not refine picks right now.' },
+      { error: (err as Error).message || 'Could not suggest more movies right now.' },
       { status: 500 },
     );
   }

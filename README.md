@@ -22,7 +22,7 @@ docker run --rm -d -p 3000:3000 oblivion2098/friendboxd:latest
 - **Friend weightage** — pick up to 5 friends and dial each one's influence from 0–100% (50 = neutral, 100 = 2×, 0 = excluded).
 - **Genre / mood filter** — ask for a vibe ("something cozy", "edge-of-your-seat thriller") and the engine re-ranks accordingly.
 - **Real Letterboxd data** — every recommendation card shows the official synopsis, tagline, director, and runtime scraped from the film's Letterboxd page.
-- **AI layer (optional)** — an OpenAI-compatible model writes a one-line reason and "more like this" picks. Falls back to deterministic reasons when no API key is set or the call fails (e.g. an OpenAI account out of credits — the app now surfaces the actual reason instead of failing silently), so the app works with or without AI.
+- **AI layer (optional)** — Google Gemini writes a one-line reason and "more like this" picks for every recommendation. Each AI-suggested film links to its **real Letterboxd page**, from which the app resolves a genuine poster + average rating (tagged "AI suggested" in the UI). Falls back to deterministic reasons when no API key is set or the call fails (e.g. an exhausted Gemini quota — the app surfaces the actual reason in the server log), so the app works with or without AI.
 - **Session persistence** — your username, friends, weights, and results live in `sessionStorage`, so refreshing resumes exactly where you left off.
 - **Graceful degradation** — if Letterboxd blocks crawling, the app falls back to manual friend entry instead of breaking.
 - **Dark cinematic UI** — Letterboxd-inspired dark theme with gold accents, poster grids, and smooth animations.
@@ -54,7 +54,7 @@ docker run --rm -d -p 3000:3000 oblivion2098/friendboxd:latest
 ```
 Browser (React)  →  Next.js API routes  →  Crawler  →  Scoring engine  →  AI layer
      │                    │                  │              │              │
- sessionStorage      /api/analyze        cheerio/HTTP     taste-match    OpenAI (optional)
+ sessionStorage      /api/analyze        cheerio/HTTP     taste-match    Gemini (optional)
      │                    │              + Playwright       + candidates   + deterministic
      │                    │                 fallback           │              fallback
      └────── state persists across reloads ────────────────────┘
@@ -84,7 +84,7 @@ Compares your films against each friend's using weighted signals:
 Pulls films from your selected friends' watchlists, excludes ones you've already seen, and scores each by `friend match score × your custom weight`.
 
 ### 4. AI layer (`src/lib/ai/recommender.ts`)
-Sends the top candidates to an OpenAI-compatible API for a one-line reason + "more like this" suggestions. Without an API key it uses deterministic reasons, so the app never depends on AI. If the API call fails (missing credits, bad key, model not allowed), the failure reason is surfaced in the UI and returned as `aiError` from `/api/refine`.
+Sends the top candidates to Google Gemini (JSON output mode) for a one-line reason + "more like this" suggestions. The system prompt requires a **real Letterboxd URL for every suggested film**; the app then fetches that film's page (rate-limited) to attach a genuine poster + average rating, and the UI shows them tagged "AI suggested". Without an API key it uses deterministic reasons, so the app never depends on AI. If the API call fails (missing quota, bad key, model not allowed), the reason is logged server-side, the dashboard shows a generic message, and `aiError` is returned from `/api/refine`.
 
 ### 5. State (`src/hooks/useSession.ts`)
 Everything persists in `sessionStorage` — username, selected friends, weights, genre, and results.
@@ -98,7 +98,7 @@ Everything persists in `sessionStorage` — username, selected friends, weights,
 - **cheerio** for HTML parsing
 - **playwright** for stealth browser fallback
 - **curl-impersonate** (optional, bundled in Docker) for real-Chrome TLS impersonation
-- **OpenAI-compatible API** for the optional AI layer
+- **Google Gemini API** for the optional AI layer
 
 ---
 
@@ -112,7 +112,7 @@ npm install
 npm run setup:crawler
 
 # 3. (Optional) enable the AI layer
-cp .env.example .env.local   # then add your OPENAI_API_KEY
+cp .env.example .env.local   # then add your GEMINI_API_KEY
 
 # 4. Run the dev server
 npm run dev
@@ -130,9 +130,10 @@ All runtime knobs are environment-driven via `src/lib/config.ts`. Copy `.env.exa
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | — | API key for the AI layer (optional). |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Any OpenAI-compatible endpoint. |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model used for reasons / "more like this". |
+| `GEMINI_API_KEY` | — | Google AI Studio API key for the AI layer (optional). `OPENAI_API_KEY` is accepted as a fallback while migrating. |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Any Gemini-compatible endpoint. |
+| `GEMINI_MODEL` | `gemini-3.5-flash` | Model used for reasons / "more like this" (supports JSON output mode + response schema). |
+| `AI_MAX_SUGGESTED` | `8` | Max "AI suggested" film pages fetched to resolve real posters + ratings. |
 | `CRAWLER_MODE` | `auto` | `auto` \| `http` \| `browser`. |
 | `CRAWLER_MAX_PAGES` | `3` | Max pages crawled per profile. |
 | `CRAWLER_DELAY_MS` | `200` | Small gap between pages; the rate limiter is the real throttle. |
@@ -162,7 +163,7 @@ Friendboxd ships a `render.yaml` blueprint that deploys the Docker image as a **
 
 1. Push this repo to GitHub.
 2. Go to [render.com](https://render.com) → **New** → **Blueprint** → connect the repo. `render.yaml` is auto-detected.
-3. (Optional) Set `OPENAI_API_KEY` in the service's **Environment** tab.
+3. (Optional) Set `GEMINI_API_KEY` in the service's **Environment** tab.
 4. **Deploy.** Render builds the Docker image and starts the service.
 
 ### What you get
@@ -215,7 +216,7 @@ docker run --rm -p 3000:3000 -e CRAWLER_MODE=http friendboxd:light
 **With the AI layer:**
 
 ```bash
-docker run --rm -p 3000:3000 -e OPENAI_API_KEY=sk-... friendboxd
+docker run --rm -p 3000:3000 -e GEMINI_API_KEY=... friendboxd
 ```
 
 **Or with Docker Compose:**

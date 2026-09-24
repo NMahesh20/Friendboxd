@@ -19,7 +19,7 @@ export function AiBadge({ className = '' }: { className?: string }) {
         role="tooltip"
         className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 hidden -translate-x-1/2 whitespace-nowrap rounded-lg bg-black/95 px-2.5 py-1.5 text-[10px] font-normal normal-case tracking-normal text-zinc-200 shadow-xl ring-1 ring-white/10 group-hover/ai:block"
       >
-        Set an OpenAI API key to enable AI
+        Set a Gemini API key to enable AI
       </span>
     </span>
   );

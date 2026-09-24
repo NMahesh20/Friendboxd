@@ -3,6 +3,8 @@
 import { useState, type FormEvent } from 'react';
 import { GENRES } from '@/lib/utils/genres';
 import { validateGenre } from '@/lib/utils/validation';
+import { classifyMood } from '@/lib/client/api';
+import { Spinner } from '@/components/ui/Spinner';
 
 const MOOD_PRESETS = [
   { label: '😱 Scary', value: 'scary' },
@@ -21,14 +23,17 @@ export function GenreSelector({
   initial,
   onSelect,
   onBack,
+  onToast,
 }: {
   initial: string | null;
   onSelect: (genre: string) => void;
   onBack: () => void;
+  onToast?: (text: string, tone?: 'info' | 'error' | 'success') => void;
 }) {
   const [custom, setCustom] = useState(initial ?? '');
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(initial);
+  const [submitting, setSubmitting] = useState(false);
 
   const choose = (value: string) => {
     setSelected(value);
@@ -36,13 +41,37 @@ export function GenreSelector({
     setError(null);
   };
 
-  const submit = (e: FormEvent<HTMLFormElement>) => {
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const value = custom.trim() || selected;
-    const check = validateGenre(value);
+    const raw = custom.trim() || selected || '';
+    const check = validateGenre(raw);
     if (!check.ok || !check.value) {
       setError(check.error ?? 'Please pick a genre or mood.');
       return;
+    }
+
+    // Quick vibes + genre chips go straight through — no AI needed.
+    if (!custom.trim()) {
+      onSelect(check.value);
+      return;
+    }
+
+    // Free-text description → ask Gemini to classify it into a Letterboxd
+    // genre, then pick the most relevant one. Falls back to local keyword
+    // mapping when no key is set or the AI call fails.
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await classifyMood(custom.trim());
+      if (res.genre) {
+        onToast?.(`✨ AI matched your vibe to “${res.genre}”.`, 'success');
+        onSelect(res.genre);
+        return;
+      }
+    } catch {
+      // AI unavailable — silently fall back to local mapping.
+    } finally {
+      setSubmitting(false);
     }
     onSelect(check.value);
   };
@@ -125,8 +154,18 @@ export function GenreSelector({
           <button type="button" className="btn-ghost" onClick={onBack}>
             ← Back
           </button>
-          <button type="submit" className="btn-primary" disabled={!custom.trim() && !selected}>
-            Get my picks →
+          <button
+            type="submit"
+            className="btn-primary inline-flex items-center gap-2"
+            disabled={(!custom.trim() && !selected) || submitting}
+          >
+            {submitting ? (
+              <>
+                <Spinner size={14} /> Matching your vibe…
+              </>
+            ) : (
+              'Get my picks →'
+            )}
           </button>
         </div>
       </form>

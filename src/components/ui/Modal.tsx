@@ -39,12 +39,15 @@ export function Modal({
       aria-modal="true"
       aria-labelledby={labelledBy}
     >
+      <div className="fixed inset-0 bg-black/70 backdrop-blur-sm animate-fade-in" />
       <div
-        className="fixed inset-0 bg-black/70 backdrop-blur-sm animate-fade-in"
+        className="relative z-10 flex min-h-full items-end justify-center sm:items-center sm:p-4"
         onClick={onClose}
-      />
-      <div className="relative z-10 flex min-h-full items-end justify-center sm:items-center sm:p-4">
-        <div className="relative w-full max-w-2xl rounded-t-3xl border border-white/10 bg-base-900 shadow-2xl animate-fade-up sm:rounded-3xl">
+      >
+        <div
+          className="relative w-full max-w-2xl rounded-t-3xl border border-white/10 bg-base-900 shadow-2xl animate-fade-up sm:rounded-3xl"
+          onClick={(e) => e.stopPropagation()}
+        >
           {children}
         </div>
       </div>

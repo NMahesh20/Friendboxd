@@ -85,6 +85,24 @@ export interface Influence {
   friendRating: number | null;
 }
 
+/**
+ * A film the AI suggested as a look-alike ("more like this"). The AI always
+ * returns a real Letterboxd URL, and the app resolves the poster + average
+ * rating from that film's page so the suggestion is fully displayable.
+ */
+export interface SuggestedFilm {
+  title: string;
+  year?: number | null;
+  /** Real Letterboxd film URL (https://letterboxd.com/film/<slug>/). */
+  letterboxdUrl?: string;
+  /** The film's Letterboxd slug (derived from letterboxdUrl). */
+  slug?: string;
+  /** Real poster, resolved from the Letterboxd film page. */
+  poster?: string;
+  /** Letterboxd average rating (0.5–5), resolved from the film page. */
+  rating?: number | null;
+}
+
 /** A candidate movie with scoring + AI enrichment. */
 export interface CandidateMovie {
   film: Film;
@@ -98,7 +116,7 @@ export interface CandidateMovie {
   /** AI-generated enrichment (present when the AI layer ran). */
   ai?: {
     reason: string;
-    moreLikeThis: string[];
+    moreLikeThis: SuggestedFilm[];
   };
 }
 
@@ -107,7 +125,7 @@ export interface RecommendationResult {
   genre: string;
   generatedAt: string;
   aiUsed: boolean;
-  /** Whether an OpenAI API key is configured (AI features available). */
+  /** Whether an AI provider API key is configured (Gemini → AI features on). */
   aiEnabled: boolean;
   /** True when the pool was too small to be meaningful. */
   degraded?: boolean;

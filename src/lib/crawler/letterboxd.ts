@@ -378,6 +378,38 @@ function parseFilmPage(html: string, fallback: Film): Film {
   };
 }
 
+/**
+ * Parse the Letterboxd average rating (0.5–5) from a film page's JSON-LD
+ * (`aggregateRating.ratingValue`). Kept separate from parseFilmPage so
+ * crawling a film page for enrichment never clobbers a friend's *personal*
+ * rating on a candidate with the site-wide average.
+ */
+export function parseFilmPageRating(html: string): number | null {
+  const match = html.match(/"aggregateRating"\s*:\s*\{[^{}]*"ratingValue"\s*:\s*([\d.]+)/);
+  if (!match) return null;
+  const value = parseFloat(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Fetch a film's detail page by slug and return the enriched Film (real
+ * poster via og:image + the Letterboxd average rating). Used by the AI
+ * layer to resolve posters/ratings for its "more like this" suggestions.
+ * Returns null when the page can't be fetched. Rate-limited as usual.
+ */
+export async function fetchFilmDetails(slug: string): Promise<Film | null> {
+  if (!/^[a-z0-9-]+$/.test(slug)) return null;
+  try {
+    const html = await getHtml(`${BASE}/film/${slug}/`, `${BASE}/`);
+    const fallback: Film = { id: slug, slug, title: slug, year: null, genres: [], rating: null };
+    const film = parseFilmPage(html, fallback);
+    return { ...film, rating: parseFilmPageRating(html) ?? film.rating };
+  } catch (err) {
+    console.warn(`[crawler] could not fetch film page for ${slug}:`, (err as Error).message);
+    return null;
+  }
+}
+
 // ─── Pagination helpers ─────────────────────────────────────────────────
 
 function hasNextPage(html: string): boolean {

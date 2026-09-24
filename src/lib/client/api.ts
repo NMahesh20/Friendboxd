@@ -66,3 +66,23 @@ export function refineRecommendations(
     { candidates, genre },
   );
 }
+
+/** Ask Gemini for a few NEW films based on the current picks. */
+export function suggestMoreMovies(
+  candidates: CandidateMovie[],
+  genre: string,
+): Promise<{ movies: CandidateMovie[]; aiUsed: boolean; aiError?: string | null }> {
+  return post<{ movies: CandidateMovie[]; aiUsed: boolean; aiError?: string | null }>(
+    '/api/suggest-more',
+    { candidates, genre },
+  );
+}
+
+/** Map a free-text vibe description to one of the app's Letterboxd genres. */
+export function classifyMood(
+  description: string,
+): Promise<{ genre: string | null; aiError?: string | null }> {
+  return post<{ genre: string | null; aiError?: string | null }>('/api/classify-mood', {
+    description,
+  });
+}

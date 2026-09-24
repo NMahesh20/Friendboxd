@@ -2,21 +2,17 @@
 
 import type { CandidateMovie } from '@/lib/types';
 import { stars } from '@/lib/utils/format';
-import { AiBadge } from '@/components/ui/AiBadge';
 
 export function MovieCard({
   movie,
   index,
   onOpen,
-  aiEnabled,
 }: {
   movie: CandidateMovie;
   index: number;
   onOpen: (movie: CandidateMovie) => void;
-  /** Whether an OpenAI API key is configured (hide the "needs key" badge). */
-  aiEnabled: boolean;
 }) {
-  const { film, score, influencedBy, ai } = movie;
+  const { film, score, influencedBy } = movie;
   const topFriend = influencedBy[0];
 
   return (
@@ -77,14 +73,6 @@ export function MovieCard({
             {film.genres.length > 0 && ` · ${film.genres.slice(0, 3).join(', ')}`}
           </p>
         </div>
-
-        {/* AI / deterministic pick reason (shown whenever we have one) */}
-        {ai?.reason && (
-          <div className="flex items-start gap-1.5">
-            {aiEnabled && <AiBadge className="mt-0.5 shrink-0" />}
-            <p className="line-clamp-2 text-xs leading-relaxed text-zinc-400">{ai.reason}</p>
-          </div>
-        )}
 
         {/* Influenced by */}
         <div className="mt-auto flex items-center gap-1.5 pt-1">

@@ -29,6 +29,11 @@ export interface AiConfig {
   apiKey: string | null;
   baseUrl: string;
   model: string;
+  /**
+   * Max "AI suggested" film pages fetched to resolve real posters + ratings
+   * (rate-limited, so it stays polite — bounds the added wall-clock time).
+   */
+  maxSuggestedFilms: number;
 }
 
 export interface CacheConfig {
@@ -75,9 +80,13 @@ export const crawlerConfig: CrawlerConfig = {
 };
 
 export const aiConfig: AiConfig = {
-  apiKey: process.env.OPENAI_API_KEY || null,
-  baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-  model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  // Gemini (Google AI) is the default AI provider. OPENAI_API_KEY is kept
+  // as a fallback so existing deployments keep working during migration —
+  // GEMINI_API_KEY wins when both are set.
+  apiKey: process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || null,
+  baseUrl: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
+  model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
+  maxSuggestedFilms: int(process.env.AI_MAX_SUGGESTED, 8),
 };
 
 export const cacheConfig: CacheConfig = {

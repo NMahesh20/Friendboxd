@@ -233,6 +233,7 @@ export default function Home() {
           initial={session.genre}
           onSelect={selectGenre}
           onBack={() => setStep('friends')}
+          onToast={push}
         />
       )}
 

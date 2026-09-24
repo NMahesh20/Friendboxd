@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { CandidateMovie, RecommendationResult } from '@/lib/types';
+import type { CandidateMovie, RecommendationResult, SuggestedFilm } from '@/lib/types';
 import { MovieCard } from '@/components/MovieCard';
 import { MovieModal } from '@/components/MovieModal';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Spinner } from '@/components/ui/Spinner';
-import { AiBadge } from '@/components/ui/AiBadge';
-import { refineRecommendations, ApiError } from '@/lib/client/api';
+import { refineRecommendations, suggestMoreMovies, ApiError } from '@/lib/client/api';
+import { stars } from '@/lib/utils/format';
 
 interface Props {
   result: RecommendationResult;
@@ -23,10 +23,17 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
   const [refining, setRefining] = useState(false);
   const [refinedCandidates, setRefinedCandidates] = useState<CandidateMovie[] | null>(null);
 
-  // Current picks — replaced in place when the user runs "AI refine".
+  // "More like this" — AI look-alikes shown alongside the original movie.
+  const [moreLikeThisSuggestions, setMoreLikeThisSuggestions] = useState<{
+    original: CandidateMovie;
+    suggestions: SuggestedFilm[];
+    loading: boolean;
+  } | null>(null);
+
+  // Current picks — the crawl results, plus any AI movies "More movies" appended.
   const candidates = refinedCandidates ?? result.candidates;
 
-  // A fresh recommendation result supersedes any in-place AI refinement.
+  // A fresh recommendation result supersedes any added AI movies.
   useEffect(() => {
     setRefinedCandidates(null);
   }, [result.generatedAt]);
@@ -50,33 +57,62 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
     return list;
   }, [candidates, genreFilter]);
 
-  const moreLikeThis = (movie: CandidateMovie) => {
-    const genres = movie.film.genres;
-    if (genres.length === 0) {
-      onToast('No genre data for this film to find look-alikes.', 'info');
+  const moreLikeThis = async (movie: CandidateMovie) => {
+    // Only ever make the AI call when a key is configured — no genre-filter
+    // fallback, and no call at all otherwise.
+    if (!result.aiEnabled) {
+      onToast('Add a Gemini API key to enable AI movie suggestions.', 'info');
       return;
     }
-    setGenreFilter(genres[0]);
     setSelected(null);
-    onToast(`Showing more like “${movie.film.title}” (${genres[0]}).`, 'success');
+    setMoreLikeThisSuggestions({ original: movie, suggestions: [], loading: true });
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    try {
+      const res = await refineRecommendations([movie], result.genre);
+      if (!res.aiUsed || res.aiError) {
+        setMoreLikeThisSuggestions(null);
+        onToast('AI refine is temporarily unavailable — please try again later.', 'error');
+        return;
+      }
+      const suggestions = (res.candidates?.[0]?.ai?.moreLikeThis ?? []).filter(
+        (s) => s.slug !== movie.film.slug,
+      );
+      if (suggestions.length === 0) {
+        setMoreLikeThisSuggestions(null);
+        onToast(`No look-alikes found for “${movie.film.title}” — try another film.`, 'info');
+        return;
+      }
+      setMoreLikeThisSuggestions({ original: movie, suggestions, loading: false });
+      onToast(`Found ${suggestions.length} look-alikes for “${movie.film.title}”.`, 'success');
+    } catch (err) {
+      setMoreLikeThisSuggestions(null);
+      onToast(err instanceof ApiError ? err.message : 'AI suggestions failed.', 'error');
+    }
   };
 
+  // "More movies" — ask Gemini for a few NEW films based on the current
+  // picks, then append them to the grid (deduped against what's shown).
   const handleRefine = async () => {
     if (!result.aiEnabled || refining) return;
     setRefining(true);
     try {
-      const res = await refineRecommendations(candidates, result.genre);
-      if (res.aiUsed) {
-        setRefinedCandidates(res.candidates);
-        onToast('✨ AI-refined your picks.', 'success');
+      const res = await suggestMoreMovies(candidates, result.genre);
+      if (res.aiUsed && res.movies.length > 0) {
+        const known = new Set(candidates.map((c) => c.film.slug));
+        const fresh = res.movies.filter((m) => !known.has(m.film.slug));
+        if (fresh.length > 0) {
+          setRefinedCandidates([...candidates, ...fresh]);
+          onToast(`✨ Added ${fresh.length} more movies.`, 'success');
+        } else {
+          onToast('No new movies found — try again.', 'info');
+        }
       } else if (res.aiError) {
         onToast('AI refine is temporarily unavailable — please try again later.', 'error');
       } else {
-        onToast('AI refine didn’t change anything — try again.', 'info');
+        onToast('No new movies found — try again.', 'info');
       }
     } catch (err) {
-      onToast(err instanceof ApiError ? err.message : 'AI refine failed.', 'error');
+      onToast(err instanceof ApiError ? err.message : 'AI suggestions failed.', 'error');
     } finally {
       setRefining(false);
     }
@@ -93,10 +129,6 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
           {result.genre ? ` for “${result.genre}”` : ''}.
           {result.aiUsed ? (
             <span className="inline-flex items-center gap-1">✨ AI-refined</span>
-          ) : !result.aiEnabled ? (
-            <span className="inline-flex items-center gap-1">
-              {/* <AiBadge /> */}
-            </span>
           ) : (
             ''
           )}
@@ -107,6 +139,109 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
           </p>
         )}
       </header>
+
+      {/* More like this — AI look-alikes shown alongside the original movie */}
+      {moreLikeThisSuggestions && (
+        <div className="mb-8">
+          <div className="mb-3 flex items-center gap-2">
+            <h3 className="font-display text-lg font-bold text-white">
+              More like{' '}
+              <span className="accent-gradient">
+                “{moreLikeThisSuggestions.original.film.title}”
+              </span>
+            </h3>
+            <button
+              type="button"
+              onClick={() => setMoreLikeThisSuggestions(null)}
+              aria-label="Dismiss more-like-this suggestions"
+              className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/5 text-zinc-400 transition-colors hover:bg-white/10 hover:text-white"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex gap-3 overflow-x-auto pb-3">
+            {/* The original movie the suggestions were built from */}
+            <button
+              type="button"
+              onClick={() => setSelected(moreLikeThisSuggestions.original)}
+              className="group w-36 shrink-0 overflow-hidden rounded-xl border border-white/15 bg-base-850 text-left transition-colors hover:border-white/30"
+              aria-label={`Open details for ${moreLikeThisSuggestions.original.film.title}`}
+            >
+              <div className="poster-aspect w-full overflow-hidden bg-base-800">
+                {moreLikeThisSuggestions.original.film.poster ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={moreLikeThisSuggestions.original.film.poster}
+                    alt={`${moreLikeThisSuggestions.original.film.title} poster`}
+                    loading="lazy"
+                    decoding="async"
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-base-700 to-base-900 p-2">
+                    <span className="text-center text-xs font-semibold text-zinc-300">
+                      {moreLikeThisSuggestions.original.film.title}
+                    </span>
+                  </div>
+                )}
+              </div>
+              <div className="p-2">
+                <p className="line-clamp-1 text-[11px] font-semibold text-white">
+                  {moreLikeThisSuggestions.original.film.title}
+                </p>
+                <p className="text-[10px] text-zinc-500">Original</p>
+              </div>
+            </button>
+
+            {/* AI suggestions — click through to their real Letterboxd pages */}
+            {moreLikeThisSuggestions.loading ? (
+              <div className="flex w-36 shrink-0 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/15 p-4 text-center">
+                <Spinner size={18} />
+                <p className="text-[11px] text-zinc-500">Finding look-alikes…</p>
+              </div>
+            ) : (
+              moreLikeThisSuggestions.suggestions.map((s) => (
+                <a
+                  key={s.letterboxdUrl ?? `${s.title}-${s.year ?? ''}`}
+                  href={s.letterboxdUrl ?? `https://letterboxd.com/film/${s.slug ?? ''}/`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group w-36 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-base-850 transition-colors hover:border-violet-400/50"
+                  aria-label={`${s.title} on Letterboxd`}
+                >
+                  <div className="poster-aspect w-full overflow-hidden bg-base-800">
+                    {s.poster ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={s.poster}
+                        alt={`${s.title} poster`}
+                        loading="lazy"
+                        decoding="async"
+                        className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-base-700 to-base-900 p-2">
+                        <span className="text-center text-xs font-semibold text-zinc-300">
+                          {s.title}
+                        </span>
+                      </div>
+                    )}
+                    {s.rating != null && (
+                      <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-1.5 py-0.5 text-[9px] font-semibold text-gold backdrop-blur-sm">
+                        {stars(s.rating)}
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-2">
+                    <p className="line-clamp-1 text-[11px] font-medium text-zinc-200">{s.title}</p>
+                    {s.year != null && <p className="text-[10px] text-zinc-500">{s.year}</p>}
+                  </div>
+                </a>
+              ))
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="mb-6 flex flex-wrap items-center justify-center gap-2">
@@ -123,11 +258,11 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
           disabled={!result.aiEnabled || refining}
           title={
             result.aiEnabled
-              ? 'Refine picks with AI'
-              : 'Add an OpenAI API key to enable AI refine'
+              ? 'Suggest a few more movies with AI'
+              : 'Add a Gemini API key to enable AI suggestions'
           }
         >
-          {refining ? <Spinner size={14} /> : '✨'} AI refine
+          {refining ? <Spinner size={14} /> : '✨'} More movies
         </button>
         {genreFilter && (
           <button
@@ -165,7 +300,6 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
               movie={movie}
               index={i}
               onOpen={setSelected}
-              aiEnabled={result.aiEnabled}
             />
           ))}
         </div>

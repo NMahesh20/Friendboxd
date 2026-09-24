@@ -3,7 +3,6 @@
 import type { CandidateMovie } from '@/lib/types';
 import { Modal } from '@/components/ui/Modal';
 import { TasteMeter } from '@/components/ui/TasteMeter';
-import { AiBadge } from '@/components/ui/AiBadge';
 import { stars } from '@/lib/utils/format';
 
 export function MovieModal({
@@ -16,7 +15,7 @@ export function MovieModal({
   onMoreLikeThis: (movie: CandidateMovie) => void;
 }) {
   if (!movie) return null;
-  const { film, ai, influencedBy, score, reasons } = movie;
+  const { film, influencedBy, score, reasons } = movie;
 
   return (
     <Modal open={!!movie} onClose={onClose} labelledBy="movie-modal-title">
@@ -134,23 +133,6 @@ export function MovieModal({
                   {r}
                 </span>
               ))}
-            </div>
-          )}
-
-          {/* More like this (AI-generated suggestions) */}
-          {ai?.moreLikeThis && ai.moreLikeThis.length > 0 && (
-            <div className="mb-4">
-              <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                More like this
-                <AiBadge />
-              </h3>
-              <div className="flex flex-wrap gap-1.5">
-                {ai.moreLikeThis.map((title) => (
-                  <span key={title} className="chip">
-                    {title}
-                  </span>
-                ))}
-              </div>
             </div>
           )}
 
