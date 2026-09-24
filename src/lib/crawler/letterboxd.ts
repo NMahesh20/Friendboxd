@@ -542,17 +542,22 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
 
   // 3. User's own films (for overlap scoring + exclusion). Crawled deeper
   //    than friends' lists so recommendations never include watched films.
+  //    Skipped in light mode (matchTaste=false): the films only feed the
+  //    taste-match scoring, and the recommend step fetches them fresh when
+  //    it needs to build the watched-exclusion set.
   let userFilms: Film[] = [];
-  try {
-    userFilms = await collectPaginated(
-      (p) => `${BASE}/${username}/films/page/${p}/`,
-      parseFilmsPage,
-      maxUserPages,
-      `${BASE}/${username}/`,
-    );
-  } catch (err) {
-    warnings.push('Could not fetch your watched films — overlap scoring will be limited.');
-    console.warn('[crawler] user films failed:', (err as Error).message);
+  if (opts.matchTaste !== false) {
+    try {
+      userFilms = await collectPaginated(
+        (p) => `${BASE}/${username}/films/page/${p}/`,
+        parseFilmsPage,
+        maxUserPages,
+        `${BASE}/${username}/`,
+      );
+    } catch (err) {
+      warnings.push('Could not fetch your watched films — overlap scoring will be limited.');
+      console.warn('[crawler] user films failed:', (err as Error).message);
+    }
   }
 
   // 3b. User's own lists (for list-overlap scoring).

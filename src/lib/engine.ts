@@ -11,8 +11,8 @@ import {
 } from '@/lib/crawler/letterboxd';
 import { computeTasteMatches } from '@/lib/scoring/taste-match';
 import { generateCandidates, computeGenreRelevance } from '@/lib/scoring/candidates';
-import { enrichWithAi } from '@/lib/ai/recommender';
 import { getCached, setCached, type CacheEntry } from '@/lib/storage/cache';
+import { markCrawlStart, markCrawlEnd } from '@/lib/keepalive';
 import { resolveMood, genresForUrl } from '@/lib/utils/genres';
 import { RECOMMENDATION_COUNT, aiConfig } from '@/lib/config';
 import type {
@@ -26,6 +26,19 @@ import type {
 // ─── Analyze ────────────────────────────────────────────────────────────
 
 export async function analyzeTaste(
+  username: string,
+  opts: { matchTaste?: boolean } = {},
+): Promise<AnalyzeResult> {
+  // Keep the Render instance awake while the crawl runs (see keepalive.ts).
+  markCrawlStart();
+  try {
+    return await analyzeTasteImpl(username, opts);
+  } finally {
+    markCrawlEnd();
+  }
+}
+
+async function analyzeTasteImpl(
   username: string,
   opts: { matchTaste?: boolean } = {},
 ): Promise<AnalyzeResult> {
@@ -63,12 +76,36 @@ export async function analyzeTaste(
 // ─── Manual friend ──────────────────────────────────────────────────────
 
 export async function fetchManualFriend(username: string): Promise<Friend> {
+  markCrawlStart();
+  try {
+    return await fetchManualFriendImpl(username);
+  } finally {
+    markCrawlEnd();
+  }
+}
+
+async function fetchManualFriendImpl(username: string): Promise<Friend> {
   return crawlFriend(username);
 }
 
 // ─── Recommend ──────────────────────────────────────────────────────────
 
 export async function recommendMovies(
+  username: string,
+  friendIds: string[],
+  genreMood: string,
+  weights: Record<string, number> = {},
+): Promise<RecommendationResult> {
+  // Keep the Render instance awake while the crawl runs (see keepalive.ts).
+  markCrawlStart();
+  try {
+    return await recommendMoviesImpl(username, friendIds, genreMood, weights);
+  } finally {
+    markCrawlEnd();
+  }
+}
+
+async function recommendMoviesImpl(
   username: string,
   friendIds: string[],
   genreMood: string,
@@ -204,14 +241,12 @@ export async function recommendMovies(
   // Re-rank after genre enrichment.
   candidates = reRankByGenre(candidates, genreMood);
 
-  // AI refinement.
-  const { candidates: aiCandidates, aiUsed, aiError } = await enrichWithAi(
-    candidates,
-    matches,
-    genreMood,
-  );
-
-  const degraded = aiCandidates.length < 3;
+  // No AI call here — Gemini is consulted ONLY on explicit user actions
+  // ("More like this", "✨ More movies", or a free-text mood description).
+  // The initial recommendation is purely crawl + deterministic scoring.
+  const aiUsed = false;
+  const aiError: string | null = null;
+  const degraded = candidates.length < 3;
 
   // Hard guarantee: never recommend a film the user has already watched.
   // Candidates are already excluded during generation; this is a final
@@ -220,7 +255,7 @@ export async function recommendMovies(
   const watchedKeys = new Set(
     user.films.map((f) => `${f.title.toLowerCase()}|${f.year ?? ''}`),
   );
-  const unseen = aiCandidates.filter((c) => {
+  const unseen = candidates.filter((c) => {
     if (watchedSlugs.has(c.film.slug)) return false;
     return !watchedKeys.has(`${c.film.title.toLowerCase()}|${c.film.year ?? ''}`);
   });
