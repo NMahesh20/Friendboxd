@@ -56,6 +56,11 @@ function aiErrorMessage(status: number, body: string): string {
   }
   const blob = `${reason} ${code} ${message}`;
   if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(blob)) {
+    // A 429 that still carries a "retry in Xs" hint is the free-tier
+    // per-minute limit (recoverable shortly), not a hard quota exhaustion.
+    if (status === 429 && /retry in/i.test(message)) {
+      return "hit Gemini's free-tier per-minute rate limit — retried but couldn't get through; try again in a minute.";
+    }
     return 'your Gemini API quota is exhausted — add credits or raise the quota in Google AI Studio.';
   }
   if (/API_KEY_INVALID|key not valid|PERMISSION_DENIED|denied/i.test(blob)) {
@@ -114,10 +119,21 @@ async function callGemini({
     `${aiConfig.baseUrl}/models/${encodeURIComponent(aiConfig.model)}:generateContent` +
     `?key=${encodeURIComponent(aiConfig.apiKey)}`;
 
-  // Transient overload / quota spikes (429 or 5xx) are retried once after a
-  // short pause so a single spike doesn't silently drop the AI layer.
-  const attempts = [false, true];
-  for (const isRetry of attempts) {
+  // The Gemini free tier frequently rate-limits requests (429, "please retry
+  // in Xs") and serves transient 5xx overloads. Retry a few times — each time
+  // honouring the delay Gemini itself suggests — but bound the total wait so
+  // the request still completes (or fails cleanly) inside the route budget.
+  //
+  // Free-tier throttling has two layers: a per-minute bucket (recovers within
+  // ~60s — retries ride it out) and a hard per-day cap (only resets daily —
+  // retrying past it is pointless). 6 attempts with hint-honouring delays
+  // span a full minute, so recoverable spikes succeed while a dead daily cap
+  // fails cleanly instead of hanging for ages.
+  const MAX_ATTEMPTS = 6; // 1 initial + up to 5 retries
+  const TOTAL_RETRY_BUDGET_MS = 60_000;
+
+  let retryBudgetMs = TOTAL_RETRY_BUDGET_MS;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let res: Response;
     try {
       res = await fetch(url, {
@@ -141,8 +157,11 @@ async function callGemini({
         }),
       });
     } catch (err) {
-      if (!isRetry) {
-        await new Promise((r) => setTimeout(r, 1500));
+      const wait = Math.min(1500, retryBudgetMs);
+      if (attempt < MAX_ATTEMPTS && wait > 0) {
+        retryBudgetMs -= wait;
+        console.warn(`[ai] request failed (attempt ${attempt}/${MAX_ATTEMPTS}); retrying in ${(wait / 1000).toFixed(1)}s…`);
+        await new Promise((r) => setTimeout(r, wait));
         continue;
       }
       console.warn('[ai] request failed:', (err as Error).message);
@@ -151,15 +170,17 @@ async function callGemini({
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      // Retry once on transient overload/quota (429, 5xx) — not on 4xx.
-      if (!isRetry && (res.status === 429 || res.status >= 500)) {
-        // Gemini 429 bodies include "Please retry in 12.5s" for per-minute
-        // free-tier limits — honour that delay (capped) so the retry lands
-        // after the window instead of failing against it again.
-        const retryIn = body.match(/retry in ([\d.]+)s/i);
-        const delay = Math.min(Math.max(Number(retryIn?.[1]) || 1.5, 1.5), 20);
-        console.warn(`[ai] transient error ${res.status}; retrying in ${delay}s…`);
-        await new Promise((r) => setTimeout(r, delay * 1000));
+      const transient = res.status === 429 || res.status >= 500;
+      // Gemini 429 bodies include "Please retry in 12.5s" for per-minute
+      // free-tier limits — honour it (bounded by the remaining budget) so
+      // the retry lands after the window instead of failing into it again.
+      const retryIn = body.match(/retry in ([\d.]+)s/i);
+      let delayMs = transient ? (retryIn ? Number(retryIn[1]) * 1000 : 2500) : 0;
+      delayMs = Math.max(Math.min(delayMs, retryBudgetMs), 0);
+      if (transient && attempt < MAX_ATTEMPTS && delayMs > 0) {
+        retryBudgetMs -= delayMs;
+        console.warn(`[ai] transient error ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}); retrying in ${(delayMs / 1000).toFixed(1)}s…`);
+        await new Promise((r) => setTimeout(r, delayMs));
         continue;
       }
       console.warn(`[ai] API error ${res.status}:`, body.slice(0, 500));
@@ -174,7 +195,7 @@ async function callGemini({
     return { content: text ?? null, error: null };
   }
 
-  return { content: null, error: 'Gemini request failed after retry.' };
+  return { content: null, error: 'Gemini request failed after retries.' };
 }
 
 // ─── Suggested films (AI look-alikes) ───────────────────────────────────

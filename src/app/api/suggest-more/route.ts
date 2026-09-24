@@ -4,7 +4,9 @@ import { aiConfig } from '@/lib/config';
 import type { CandidateMovie } from '@/lib/types';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+// Leave room for Gemini free-tier rate-limit retries (up to ~60s of waits
+// across the recoverable per-minute bucket) plus poster resolution.
+export const maxDuration = 120;
 
 /**
  * POST /api/suggest-more

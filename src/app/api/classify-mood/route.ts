@@ -3,7 +3,9 @@ import { classifyMood } from '@/lib/ai/recommender';
 import { aiConfig } from '@/lib/config';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+// Leave room for Gemini free-tier rate-limit retries (up to ~60s of waits
+// across the recoverable per-minute bucket) on top of the call itself.
+export const maxDuration = 120;
 
 /**
  * POST /api/classify-mood
