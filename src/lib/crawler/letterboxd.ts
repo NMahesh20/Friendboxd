@@ -60,7 +60,7 @@ async function getHtml(
   opts: { waitForPosters?: boolean } = {},
 ): Promise<string> {
   // Polite rate limit — at most `rateMax` requests per `rateWindowMs`
-  // (default 4 per 10s, see crawlerConfig). Applies to both HTTP and
+  // (default 8 per 10s, see crawlerConfig). Applies to both HTTP and
   // browser strategies.
   await rateLimiter.acquire();
   const mode = crawlerConfig.mode;

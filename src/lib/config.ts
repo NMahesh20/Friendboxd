@@ -23,6 +23,21 @@ export interface CrawlerConfig {
   posterWaitMs: number;
   /** Delay (ms) between scroll steps when triggering lazy loading. */
   browserScrollDelayMs: number;
+  /**
+   * How long (ms) the background stealth browser may sit idle before it's
+   * closed to free memory. A warm Chromium holds ~200-400MB — on small hosts
+   * (Render free ≈ 512MB) that's most of the service budget, so a finished
+   * crawl should not keep it resident forever. The next fetch relaunches it.
+   */
+  browserIdleTimeoutMs: number;
+  /**
+   * Block image/font/media downloads in the stealth browser. Letterboxd's
+   * lazy-poster JS sets the real poster URL into the DOM regardless of
+   * whether the download succeeds, and the crawler only reads the DOM src —
+   * so blocking saves ~140MB of decoded-image memory per crawl (measured)
+   * without hurting results. Disable with CRAWLER_BLOCK_ASSETS=0.
+   */
+  blockAssets: boolean;
 }
 
 export interface AiConfig {
@@ -66,19 +81,26 @@ export const crawlerConfig: CrawlerConfig = {
   // (5 pages ≈ 150 films — keeps the analyze call inside Render's ~60s
   // request budget instead of eating a third of it on the exclusion set.)
   maxUserPages: int(process.env.CRAWLER_MAX_USER_PAGES, 5),
-  // Polite rate limit default. Letterboxd sits behind Cloudflare, which
-  // starts throwing "Just a moment" challenges at bursts of rapid requests;
-  // the limit also keeps a full analyze+friends crawl inside a serverless
-  // request budget. 4 per 10s (≈ one request every 2.5s) stays below the
-  // burst threshold while keeping crawls responsive. Bump up with
-  // CRAWLER_RATE_MAX on residential IPs; drop to 2 if you see 403s.
-  rateMax: int(process.env.CRAWLER_RATE_MAX, 4),
+  // Polite rate limit default — the previous, known-good value. Letterboxd
+  // sits behind Cloudflare, which starts throwing "Just a moment" challenges
+  // at bursts of rapid requests; 8 per 10s (≈ one every 1.25s) stays under
+  // the burst threshold while keeping crawls responsive and inside a
+  // serverless request budget. Cut to 4 with CRAWLER_RATE_MAX if you see
+  // burst 403s (a low limit just adds waits — it doesn't change identities).
+  rateMax: int(process.env.CRAWLER_RATE_MAX, 5),
   rateWindowMs: int(process.env.CRAWLER_RATE_WINDOW_MS, 10000),
   // Lazy-loaded posters: wait up to 4s for a real poster to appear in the
   // browser (adaptive — usually finishes well before the cap). Scroll steps
   // are 120ms apart so lazy images load as the page is walked through.
   posterWaitMs: int(process.env.CRAWLER_POSTER_WAIT_MS, 4000),
   browserScrollDelayMs: int(process.env.CRAWLER_BROWSER_SCROLL_DELAY_MS, 120),
+  // 5 min of no crawl traffic → close the background Chromium to free memory
+  // on small hosts (next fetch relaunches). Override with
+  // CRAWLER_BROWSER_IDLE_MS (0 disables the idle close).
+  browserIdleTimeoutMs: int(process.env.CRAWLER_BROWSER_IDLE_MS, 5 * 60 * 1000),
+  // Block image/font/media downloads in the browser context — the poster src
+  // is set by JS regardless, so this mainly saves memory (see interface).
+  blockAssets: (process.env.CRAWLER_BLOCK_ASSETS ?? '1') !== '0',
 };
 
 export const aiConfig: AiConfig = {

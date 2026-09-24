@@ -1,9 +1,9 @@
 // ─── Stealth browser strategy (Playwright) ──────────────────────────────
 // Launches a headless Chromium with stealth hardening: automation flags
-// removed, a coherent identity (real Client Hints + a UA aligned to the
-// actual Chromium version), realistic viewport/locale/timezone, and
-// navigator.webdriver masked. Used as a fallback when plain HTTP is
-// blocked, or when CRAWLER_MODE=browser.
+// removed and a KNOWN-GOOD identity bundle shared with the HTTP strategy
+// (Chrome/131 UA + forced Windows Client Hints from fingerprint.ts), plus a
+// realistic viewport/locale/timezone and navigator.webdriver masked. Used as
+// a fallback when plain HTTP is blocked, or when CRAWLER_MODE=browser.
 //
 // The browser is a LONG-LIVED background service: it launches once and holds
 // a small pool of reusable tabs, so every URL fetch is just a navigation
@@ -14,8 +14,16 @@
 // identity/cookies go fresh, and one flagged session can't cascade into
 // every later request. It self-heals (relaunches) if Chromium is killed
 // (e.g. an OOM on a small host).
+//
+// Memory on small hosts (Render free ≈ 512MB): keep the tab pool tiny, block
+// image/font/media downloads (the DOM src is all the crawl reads — saves
+// ~140MB, measured), and close the whole browser after a quiet period
+// (crawlerConfig.browserIdleTimeoutMs) so a finished crawl doesn't hold idle
+// Chromium forever. The next request simply relaunches it (DNS/TLS/HTTP warm
+// back up within one request).
 
 import { crawlerConfig, proxyConfig } from '@/lib/config';
+import { getImpersonate, sessionFingerprint } from './fingerprint';
 
 // Playwright is a heavy dependency; import lazily so the app still boots
 // if the browser binary isn't installed yet.
@@ -23,8 +31,13 @@ type Browser = import('playwright').Browser;
 type BrowserContext = import('playwright').BrowserContext;
 type Page = import('playwright').Page;
 
-/** Max tabs kept open in the background browser (bounds memory on small hosts). */
-const PAGE_POOL_SIZE = 4;
+/**
+ * Max tabs kept open in the background browser. Each open tab is a live
+ * renderer holding a page (with lazily-loaded poster images), so keep the
+ * pool small on low-RAM hosts — the rate limiter keeps concurrency polite,
+ * so 2 tabs rarely stalls a crawl.
+ */
+const PAGE_POOL_SIZE = 2;
 
 let browserPromise: Promise<Browser> | null = null;
 let contextPromise: Promise<BrowserContext> | null = null;
@@ -68,9 +81,14 @@ async function getBrowser(): Promise<Browser> {
         '--disable-blink-features=AutomationControlled',
         '--disable-dev-shm-usage',
         '--no-sandbox',
-        // Deliberately NOT disabling site isolation or GPU — real Chromium has
-        // both; turning them off is a well-known automation tell that WAFs
-        // (Letterboxd uses Cloudflare) fingerprint.
+        // Known-good from the setup that previously worked in production —
+        // restore exactly these. (An experiment dropping these in favor of
+        // "real Chromium" flags was flagged by Letterboxd's WAF on the first
+        // request; evidence over theory, don't re-"fix" without deployment
+        // proof.) Site isolation off also keeps renderer processes down,
+        // which is the biggest browser-side memory lever.
+        '--disable-gpu',
+        '--disable-features=IsolateOrigins,site-per-process',
         // Match the browser window to the viewport set on the context.
         '--window-size=1366,900',
         '--lang=en-US',
@@ -96,32 +114,45 @@ async function getContext(): Promise<BrowserContext> {
     // built and the rest of the callers reuse it.
     creatingContext = (async () => {
       const browser = await getBrowser();
-      // Present a COHERENT identity: let Chromium generate its own Client
-      // Hints (brands, platform, OS) from its real runtime, and only align
-      // the UA string to the same major version. Forcing hand-written
-      // sec-ch-ua* headers made the wire claim "Chrome 131 Windows" while
-      // the JS-visible values said "Chromium <build> Linux" — an incoherence
-      // Cloudflare flags once request volume ramps up ("sometimes blocked").
-      const version = browser.version();
-      const chromeMajor = version?.split('.')[0] ?? '131';
+      // Share the HTTP strategy's session identity so the whole crawl
+      // presents one coherent fingerprint: same UA + forced Client Hints as
+      // curl-impersonate (Chrome/131 + Windows hints on the wire).
+      // NOTE: a deliberate, KNOWN-GOOD config. An experiment replacing this
+      // with Chromium's native hints + a Linux UA was flagged by Letterboxd's
+      // WAF on the very first request — don't "fix" it again without
+      // evidence from the actual deployment.
+      const fp = sessionFingerprint(getImpersonate('letterboxd'));
       const context = await browser.newContext({
-        userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMajor}.0.0.0 Safari/537.36`,
+        userAgent: fp.userAgent,
         viewport: { width: 1366, height: 900 },
         locale: 'en-US',
         timezoneId: 'America/New_York',
         colorScheme: 'dark',
+        extraHTTPHeaders: {
+          ...fp.commonHeaders,
+          'Accept-Language': 'en-US,en;q=0.5',
+        },
       });
+      // Memory: block image/font/media downloads. Letterboxd's lazy-poster JS
+      // sets the real URL into the DOM even when the download fails, and the
+      // crawler only reads the DOM src — so this saves ~140MB of decoded
+      // images per crawl without changing results (verified locally).
+      if (crawlerConfig.blockAssets) {
+        await context.route('**/*', (route) => {
+          const rt = route.request().resourceType();
+          if (rt === 'image' || rt === 'font' || rt === 'media') return route.abort();
+          return route.continue();
+        });
+      }
       // Mask automation signals on every page/navigation in this session.
       await context.addInitScript(() => {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as unknown as PluginArray });
         Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
       });
-      // Prime the session like a human opening the site — one front-page
-      // load so the first REAL request is a same-origin navigation with a
-      // warm cookie jar (a cold typed URL straight to a profile path gets
-      // treated as a bot signal). Purely best-effort.
-      await warmupContext(context);
+      // No front-page warm-up here — the previous production setup made the
+      // first real request directly against the target URL and that's the
+      // behavior that worked; keep it.
       contextCreatedAt = Date.now();
       contextRequests = 0;
       contextBlocked = false;
@@ -177,14 +208,20 @@ export function rotateBrowserSession(): void {
 }
 
 /** Drop the running browser + pool; the next fetch relaunches fresh. */
-function resetBrowser(): void {
+function resetBrowser(reason = 'reset'): void {
   pool = [];
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
   const bp = browserPromise;
   browserPromise = null;
   contextPromise = null;
   contextRequests = 0;
   contextBlocked = false;
   contextCreatedAt = 0;
+  lastActivityAt = Date.now();
+  console.info(`[crawler] browser closed (${reason}); will relaunch on next fetch`);
   void (async () => {
     if (!bp) return;
     try {
@@ -195,21 +232,40 @@ function resetBrowser(): void {
 }
 
 export async function closeBrowser(): Promise<void> {
-  resetBrowser();
+  resetBrowser('explicit close');
 }
 
-/** One front-page load on a fresh session (cookies, warm path). Best-effort. */
-async function warmupContext(context: BrowserContext): Promise<void> {
-  try {
-    const page = await context.newPage();
-    await page.goto('https://letterboxd.com/', {
-      waitUntil: 'domcontentloaded',
-      timeout: crawlerConfig.timeoutMs,
-    });
-    await page.close().catch(() => {});
-  } catch {
-    // Warm-up is optional — the crawl proceeds regardless.
+// ─── Idle shutdown ───────────────────────────────────────────────────────
+// A warm Chromium holds ~200-400MB; on small hosts (Render free ≈ 512MB)
+// that's most of the service budget on top of the Next.js process. Close the
+// browser after a quiet period so a finished crawl doesn't hold the memory
+// forever — the next request simply relaunches it (DNS/TLS/HTTP warm back up
+// within one request).
+let lastActivityAt = Date.now();
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function recheckIdle(): void {
+  const idleMs = Date.now() - lastActivityAt;
+  if (idleMs >= crawlerConfig.browserIdleTimeoutMs) {
+    idleTimer = null;
+    console.info(
+      `[crawler] browser idle ${Math.floor(idleMs / 1000)}s — closing to free memory`,
+    );
+    resetBrowser();
+    return;
   }
+  idleTimer = setTimeout(recheckIdle, crawlerConfig.browserIdleTimeoutMs - idleMs);
+  idleTimer.unref?.();
+}
+
+/** Note a browser fetch so the idle timer doesn't tear the browser down mid-crawl. */
+function touchActivity(): void {
+  lastActivityAt = Date.now();
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = null;
+  if (crawlerConfig.browserIdleTimeoutMs <= 0) return; // disabled
+  idleTimer = setTimeout(recheckIdle, crawlerConfig.browserIdleTimeoutMs);
+  idleTimer.unref?.();
 }
 
 /**
@@ -331,6 +387,9 @@ export async function fetchHtmlStealth(
   url: string,
   opts: { waitForPosters?: boolean } = {},
 ): Promise<string | null> {
+  // Keep the browser alive for the duration of the crawl (and restart the
+  // idle countdown after each fetch).
+  touchActivity();
   // A session flagged by a previous crawl can fail the FIRST fetch of the
   // next one too, so when a block page is served, rotate once and retry with
   // a fresh identity before giving up.
@@ -368,16 +427,6 @@ async function attemptFetch(
       waitUntil: 'domcontentloaded',
       timeout: crawlerConfig.timeoutMs,
     });
-    // Letterboxd is behind Cloudflare: after a burst of requests the next
-    // page comes back as a terse "Just a moment..." 403 challenge. Playwright
-    // does NOT throw on HTTP 403, so without this check the challenge HTML
-    // would be parsed as an empty result — silently killing a crawl. Treat it
-    // as a block: the caller retries once with a rotated session, and the
-    // session flag rotates it again before any later fetch.
-    if (resp?.status() === 403) {
-      contextBlocked = true;
-      return { html: null, retry: true };
-    }
     // Letterboxd is behind Cloudflare: after a burst of requests the next
     // page comes back as a terse "Just a moment..." 403 challenge. Playwright
     // does NOT throw on HTTP 403, so without this check the challenge HTML
