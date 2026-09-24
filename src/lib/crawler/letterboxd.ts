@@ -7,7 +7,7 @@ import * as cheerio from 'cheerio';
 import type { AnyNode } from 'domhandler';
 import { crawlerConfig } from '@/lib/config';
 import { fetchHtml, HttpFetchError } from './http';
-import { fetchHtmlStealth } from './browser';
+import { fetchHtmlStealth, rotateBrowserSession } from './browser';
 import { rateLimiter } from './rate-limiter';
 import { genreSlug } from '@/lib/utils/genres';
 import type { Film, Friend } from '@/lib/types';
@@ -60,19 +60,33 @@ async function getHtml(
   opts: { waitForPosters?: boolean } = {},
 ): Promise<string> {
   // Polite rate limit — at most `rateMax` requests per `rateWindowMs`
-  // (default 2 per 10s). Applies to both HTTP and browser strategies.
+  // (default 4 per 10s, see crawlerConfig). Applies to both HTTP and
+  // browser strategies.
   await rateLimiter.acquire();
   const mode = crawlerConfig.mode;
   if (mode === 'browser') {
     const html = await fetchHtmlStealth(url, opts);
     if (html) return html;
-    throw new HttpFetchError('Stealth browser unavailable', 0, false);
+    // The browser served a block/challenge (or is unavailable) — expose it
+    // like the HTTP strategy does so the caller can degrade gracefully
+    // (surface a warning / skip the film) instead of parsing a challenge
+    // page as empty data.
+    throw new HttpFetchError('Blocked by Letterboxd (HTTP 403)', 403, false);
   }
   try {
     return (await fetchHtml(url, { referer })).html;
   } catch (err) {
     console.warn('[crawler] HTTP failed, browser fallback:', url, (err as Error).message);
     if (mode === 'http') throw err;
+    // A 403 is Cloudflare's "Just a moment" challenge — session-based, so a
+    // fallback in the SAME flagged session would fail too. Rotate to a fresh
+    // identity first, then let the browser try.
+    if (err instanceof HttpFetchError && err.status === 403) {
+      rotateBrowserSession();
+      const html = await fetchHtmlStealth(url, opts);
+      if (html) return html;
+      throw err;
+    }
     // auto → try stealth browser as fallback.
     const html = await fetchHtmlStealth(url, opts);
     if (html) return html;
@@ -400,7 +414,12 @@ export function parseFilmPageRating(html: string): number | null {
 export async function fetchFilmDetails(slug: string): Promise<Film | null> {
   if (!/^[a-z0-9-]+$/.test(slug)) return null;
   try {
-    const html = await getHtml(`${BASE}/film/${slug}/`, `${BASE}/`);
+    // Film pages ship the poster in og:image + rating in JSON-LD as
+    // server-rendered HTML — no lazy-poster wait needed, and keeping the
+    // browser's work minimal reduces stalls on small hosts like Render.
+    const html = await getHtml(`${BASE}/film/${slug}/`, `${BASE}/`, {
+      waitForPosters: false,
+    });
     const fallback: Film = { id: slug, slug, title: slug, year: null, genres: [], rating: null };
     const film = parseFilmPage(html, fallback);
     return { ...film, rating: parseFilmPageRating(html) ?? film.rating };
@@ -447,7 +466,17 @@ async function collectPaginated<T>(
   const out: T[] = [];
   for (let page = 1; page <= maxPages; page++) {
     const url = buildUrl(page);
-    const html = await getHtml(url, referer);
+    let html: string;
+    try {
+      html = await getHtml(url, referer);
+    } catch (err) {
+      // A block/challenge mid-list must not throw away the pages we already
+      // collected — keep the partial result. Only rethrow when NOTHING was
+      // collected so the caller can surface a proper warning.
+      if (out.length === 0) throw err;
+      console.warn(`[crawler] pagination stopped at page ${page}:`, (err as Error).message);
+      break;
+    }
     const items = parse(html);
     out.push(...items);
     if (!hasNextPage(html) || items.length === 0) break;

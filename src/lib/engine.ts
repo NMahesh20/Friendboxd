@@ -47,7 +47,9 @@ export async function analyzeTaste(
     ? computeTasteMatches(crawl.user.films, crawl.friends, crawl.user.lists)
     : [];
 
-  if (matchTaste) setCached(username, { user: crawl.user, friends: crawl.friends, matches });
+  // Only cache healthy crawls — a blocked/empty crawl must not become the
+  // cached "result" served to every later request.
+  if (matchTaste && !crawl.blocked) setCached(username, { user: crawl.user, friends: crawl.friends, matches });
 
   return {
     user: crawl.user,

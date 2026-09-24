@@ -66,11 +66,13 @@ export const crawlerConfig: CrawlerConfig = {
   // (5 pages ≈ 150 films — keeps the analyze call inside Render's ~60s
   // request budget instead of eating a third of it on the exclusion set.)
   maxUserPages: int(process.env.CRAWLER_MAX_USER_PAGES, 5),
-  // Polite rate limit default. 8 per 10s (≈1.25s/request sustained) is safe
-  // with the TLS-impersonating transport + warm-up flow (verified live) and
-  // keeps a full analyze+friends crawl inside a serverless request budget.
-  // Bump down (CRAWLER_RATE_MAX=2) if you see 403s on a particular IP.
-  rateMax: int(process.env.CRAWLER_RATE_MAX, 8),
+  // Polite rate limit default. Letterboxd sits behind Cloudflare, which
+  // starts throwing "Just a moment" challenges at bursts of rapid requests;
+  // the limit also keeps a full analyze+friends crawl inside a serverless
+  // request budget. 4 per 10s (≈ one request every 2.5s) stays below the
+  // burst threshold while keeping crawls responsive. Bump up with
+  // CRAWLER_RATE_MAX on residential IPs; drop to 2 if you see 403s.
+  rateMax: int(process.env.CRAWLER_RATE_MAX, 4),
   rateWindowMs: int(process.env.CRAWLER_RATE_WINDOW_MS, 10000),
   // Lazy-loaded posters: wait up to 4s for a real poster to appear in the
   // browser (adaptive — usually finishes well before the cap). Scroll steps
