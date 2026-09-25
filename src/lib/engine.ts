@@ -13,8 +13,9 @@ import { computeTasteMatches } from '@/lib/scoring/taste-match';
 import { generateCandidates, computeGenreRelevance } from '@/lib/scoring/candidates';
 import { getCached, setCached, type CacheEntry } from '@/lib/storage/cache';
 import { markCrawlStart, markCrawlEnd } from '@/lib/keepalive';
+import { setCrawlPhase, clearCrawlPhase } from '@/lib/crawl-status';
 import { resolveMood, genresForUrl } from '@/lib/utils/genres';
-import { RECOMMENDATION_COUNT, aiConfig } from '@/lib/config';
+import { RECOMMENDATION_COUNT, aiConfig, crawlerConfig } from '@/lib/config';
 import type {
   AnalyzeResult,
   CandidateMovie,
@@ -35,6 +36,7 @@ export async function analyzeTaste(
     return await analyzeTasteImpl(username, opts);
   } finally {
     markCrawlEnd();
+    clearCrawlPhase();
   }
 }
 
@@ -56,6 +58,7 @@ async function analyzeTasteImpl(
   }
 
   const crawl = await crawlUser(username, { matchTaste });
+  if (matchTaste) setCrawlPhase('matching');
   const matches = matchTaste
     ? computeTasteMatches(crawl.user.films, crawl.friends, crawl.user.lists)
     : [];
@@ -81,6 +84,7 @@ export async function fetchManualFriend(username: string): Promise<Friend> {
     return await fetchManualFriendImpl(username);
   } finally {
     markCrawlEnd();
+    clearCrawlPhase();
   }
 }
 
@@ -102,6 +106,7 @@ export async function recommendMovies(
     return await recommendMoviesImpl(username, friendIds, genreMood, weights);
   } finally {
     markCrawlEnd();
+    clearCrawlPhase();
   }
 }
 
@@ -114,16 +119,27 @@ async function recommendMoviesImpl(
   // Load user + friends from cache (or crawl fresh if missing).
   let cached = getCached(username);
   if (!cached) {
-    const crawl = await crawlUser(username);
-    const matches = computeTasteMatches(crawl.user.films, crawl.friends, crawl.user.lists);
-    const fresh: CacheEntry = {
-      user: crawl.user,
-      friends: crawl.friends,
-      matches,
+    // Cache missed (e.g. light analyze never caches) — do NOT run the full
+    // network crawl here. That was fetching every discovered friend's
+    // watchlist (up to maxFriends) even though the user only selected a
+    // few. We only need the user's OWN films for the watched-exclusion
+    // set; each selected friend's films are fetched individually below.
+    let userFilms: Friend;
+    try {
+      // Reuse the manual-friend crawl: profile + films, capped deeper so
+      // the exclusion set is as complete as before.
+      userFilms = await crawlFriend(username, { maxPages: crawlerConfig.maxUserPages });
+    } catch {
+      // Blocked/private profile — degrade to an empty watchlist rather
+      // than failing the whole request.
+      userFilms = { id: username, name: username, films: [] } as Friend;
+    }
+    cached = {
+      user: userFilms,
+      friends: [], // filled per selected id below
+      matches: [], // taste-match needs the full network crawl; scores default to 50
       savedAt: Date.now(),
     };
-    setCached(username, fresh);
-    cached = fresh;
   }
 
   const { user, friends, matches } = cached;

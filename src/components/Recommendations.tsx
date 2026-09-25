@@ -167,7 +167,7 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
               className="group w-36 shrink-0 overflow-hidden rounded-xl border border-white/15 bg-base-850 text-left transition-colors hover:border-white/30"
               aria-label={`Open details for ${moreLikeThisSuggestions.original.film.title}`}
             >
-              <div className="poster-aspect w-full overflow-hidden bg-base-800">
+              <div className="poster-aspect relative w-full overflow-hidden bg-base-800">
                 {moreLikeThisSuggestions.original.film.poster ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -209,7 +209,7 @@ export function Recommendations({ result, onRegenerate, regenerating, onBack, on
                   className="group w-36 shrink-0 overflow-hidden rounded-xl border border-white/10 bg-base-850 transition-colors hover:border-violet-400/50"
                   aria-label={`${s.title} on Letterboxd`}
                 >
-                  <div className="poster-aspect w-full overflow-hidden bg-base-800">
+                  <div className="poster-aspect relative w-full overflow-hidden bg-base-800">
                     {s.poster ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img

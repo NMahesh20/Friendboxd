@@ -136,7 +136,7 @@ export function generateCandidates(
     if (c.friendCount > 1) {
       reasons.push(`Recommended by ${c.friendCount} friends`);
     } else {
-      reasons.push(`Suggested by ${c.influence[0].friendName}`);
+      reasons.push(`Matched by ${c.influence[0].friendName}`);
     }
     if (c.genreHits > 0.8) reasons.push('Matches your genre choice');
     else if (c.genreHits > 0) reasons.push('Partially matches your mood');

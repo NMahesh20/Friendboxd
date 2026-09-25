@@ -1,26 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { Spinner } from '@/components/ui/Spinner';
-
-const STEPS = [
-  'Opening a stealth session…',
-  'Finding your profile…',
-  'Discovering who you follow…',
-  'Reading your friends’ watchlists…',
-  'Comparing tastes…',
-  'Ranking your best matches…',
-];
+import { useCrawlStatus } from '@/lib/client/useCrawlStatus';
 
 export function Analyzing({ username }: { username: string }) {
-  const [step, setStep] = useState(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setStep((s) => Math.min(s + 1, STEPS.length - 1));
-    }, 1800);
-    return () => clearInterval(interval);
-  }, []);
+  // Live, server-reported crawl phase (safe whitelisted one-liner). The
+  // component only exists while the analyze request is in flight, so
+  // polling runs for exactly that window.
+  const { line, user, film } = useCrawlStatus(true, 'Finding your profile…');
+  const context = [user ? `@${user}` : null, film || null].filter(Boolean).join(' · ');
 
   return (
     <section className="flex min-h-[60vh] flex-col items-center justify-center px-4 py-16 text-center">
@@ -35,25 +23,10 @@ export function Analyzing({ username }: { username: string }) {
       <h2 className="font-display text-2xl font-semibold text-white">
         Analyzing <span className="accent-gradient">@{username}</span>
       </h2>
-      <p className="mt-3 h-5 text-sm text-zinc-400 transition-all animate-fade-in" key={step}>
-        {STEPS[step]}
-      </p>
-
-      <div className="mt-8 flex w-full max-w-xs gap-1.5">
-        {STEPS.map((_, i) => (
-          <div
-            key={i}
-            className={`h-1 flex-1 rounded-full transition-all duration-500 ${
-              i <= step ? 'bg-accent' : 'bg-base-700'
-            }`}
-          />
-        ))}
-      </div>
-
-      <p className="mt-6 max-w-sm text-xs text-zinc-500">
-        This can take a minute while we politely browse Letterboxd. Your data stays in this
-        browser session.
-      </p>
+      <p className="mt-3 h-5 text-sm text-zinc-400 transition-all animate-fade-in">{line}</p>
+      {context && (
+        <p className="mt-1 text-xs text-zinc-500 transition-all animate-fade-in">{context}</p>
+      )}
     </section>
   );
 }

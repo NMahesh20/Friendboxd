@@ -12,6 +12,7 @@ import { SessionBar } from '@/components/SessionBar';
 import { Stepper, type StepId } from '@/components/Stepper';
 import { ToastStack, useToast } from '@/components/ui/Toast';
 import { Spinner } from '@/components/ui/Spinner';
+import { useCrawlStatus } from '@/lib/client/useCrawlStatus';
 import type { Friend } from '@/lib/types';
 
 type Step = 'landing' | 'analyzing' | 'friends' | 'genre' | 'recommendations';
@@ -27,6 +28,16 @@ export default function Home() {
   const [recommending, setRecommending] = useState(false);
   const [recommendError, setRecommendError] = useState<string | null>(null);
   const [resuming, setResuming] = useState(true);
+
+  // Live crawl phase shown while recommendations load (polled only while
+  // recommending, so an idle page makes no status requests).
+  const recommendStatus = useCrawlStatus(
+    recommending && !session.lastResults,
+    'Curating picks from your friends’ watchlists…',
+  );
+  const recommendContext = [recommendStatus.user ? `@${recommendStatus.user}` : null, recommendStatus.film || null]
+    .filter(Boolean)
+    .join(' · ');
 
   // Always-current session data (avoids stale closures in callbacks).
   const sessionRef = useRef(session);
@@ -242,9 +253,10 @@ export default function Home() {
           {recommending && !session.lastResults ? (
             <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-4 py-16 text-center">
               <Spinner size={28} className="text-accent" />
-              <p className="text-sm text-zinc-400">
-                Curating picks from your friends’ watchlists…
-              </p>
+              <p className="text-sm text-zinc-400">{recommendStatus.line}</p>
+              {recommendContext && (
+                <p className="text-xs text-zinc-500">{recommendContext}</p>
+              )}
             </div>
           ) : session.lastResults ? (
             <Recommendations

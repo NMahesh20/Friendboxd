@@ -9,6 +9,7 @@ import { crawlerConfig } from '@/lib/config';
 import { fetchHtml, HttpFetchError } from './http';
 import { fetchHtmlStealth, rotateBrowserSession } from './browser';
 import { rateLimiter } from './rate-limiter';
+import { setCrawlPhase, setCrawlUser, setCrawlFilm } from '@/lib/crawl-status';
 import { genreSlug } from '@/lib/utils/genres';
 import type { Film, Friend } from '@/lib/types';
 
@@ -503,6 +504,9 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
   // 1. Profile — navigated same-origin from the homepage (a cold
   //    sec-fetch-site: none hit on a profile path is a bot signal and gets
   //    blocked; the homepage warm-up + referer primes the session cookie).
+  setCrawlPhase('profile');
+  setCrawlUser(username);
+  setCrawlFilm(null);
   let profileHtml: string;
   try {
     profileHtml = await getHtml(`${BASE}/${username}/`, `${BASE}/`);
@@ -527,6 +531,8 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
   }
 
   // 2. Following list
+  setCrawlPhase('following');
+  setCrawlUser(username);
   let following: { id: string; name: string; avatar?: string }[] = [];
   try {
     following = await collectPaginated(
@@ -547,6 +553,8 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
   //    it needs to build the watched-exclusion set.
   let userFilms: Film[] = [];
   if (opts.matchTaste !== false) {
+    setCrawlPhase('watchlist');
+    setCrawlUser(username);
     try {
       userFilms = await collectPaginated(
         (p) => `${BASE}/${username}/films/page/${p}/`,
@@ -561,6 +569,8 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
   }
 
   // 3b. User's own lists (for list-overlap scoring).
+  setCrawlPhase('lists');
+  setCrawlUser(username);
   let userLists: string[] = [];
   try {
     userLists = await collectPaginated(
@@ -590,6 +600,7 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
   //    analyze step stays fast.
   const friends: Friend[] = [];
   {
+    if (opts.matchTaste !== false) setCrawlPhase('friends');
     const seen = new Set<string>();
     const targets: { id: string; name: string; avatar?: string }[] = [];
     for (const f of following) {
@@ -603,6 +614,8 @@ export async function crawlUser(username: string, opts: CrawlOptions = {}): Prom
         if (opts.matchTaste === false) {
           return { id: f.id, name: f.name, avatar: f.avatar, films: [] };
         }
+        setCrawlUser(f.id);
+        setCrawlFilm(null);
         try {
           const films = await collectPaginated(
             (p) => `${BASE}/${f.id}/films/page/${p}/`,
@@ -634,6 +647,9 @@ export async function crawlFriend(username: string, opts: CrawlOptions = {}): Pr
   const maxPages = opts.maxPages ?? crawlerConfig.maxPages;
   const maxFilms = opts.maxFilms ?? crawlerConfig.maxFilms;
 
+  setCrawlPhase('profile');
+  setCrawlUser(username);
+  setCrawlFilm(null);
   let profileHtml: string;
   try {
     profileHtml = await getHtml(`${BASE}/${username}/`, `${BASE}/`);
@@ -675,6 +691,9 @@ export async function crawlFriendGenreFilms(
   genres: string[],
   maxFilms = 20,
 ): Promise<Film[]> {
+  setCrawlPhase('genre');
+  setCrawlUser(username);
+  setCrawlFilm(null);
   const genrePath = genres.map(genreSlug).join('+');
   const films = await collectPaginated(
     (p) => `${BASE}/${username}/films/genre/${genrePath}/by/entry-rating/page/${p}/`,
@@ -692,6 +711,7 @@ export async function crawlFriendGenreFilms(
  * this), up to `limit`.
  */
 export async function enrichFilmsWithGenres(films: Film[], limit = 20): Promise<Film[]> {
+  setCrawlPhase('posters');
   const missing = films
     .filter((f) => f.genres.length === 0 || !f.poster || isEmptyPoster(f.poster))
     .slice(0, limit);
@@ -699,6 +719,7 @@ export async function enrichFilmsWithGenres(films: Film[], limit = 20): Promise<
   for (const f of films) bySlug.set(f.slug, f);
 
   for (const film of missing) {
+    setCrawlFilm(film.title);
     try {
       // Film pages carry the real poster in og:image (server-rendered), so
       // skip the lazy-poster wait — it would only hold the browser open and
