@@ -60,6 +60,25 @@ Browser (React)  →  Next.js API routes  →  Crawler  →  Scoring engine  →
      └────── state persists across reloads ────────────────────┘
 ```
 
+### Long requests run as jobs, not held-open POSTs
+
+A crawl takes tens of seconds. Holding a single POST open for that long is
+fragile on phones: the socket sends nothing the whole time, and mobile carrier
+NATs / transparent proxies reap idle TCP connections — Chrome then rejects the
+in-flight `fetch` and the user just gets *"Network error"*, with the crawl
+thrown away.
+
+So every slow route (`/api/analyze`, `/api/recommend`, `/api/friends`,
+`/api/refine`, `/api/suggest-more`, `/api/classify-mood`) validates input,
+returns `202 { jobId }` in milliseconds, and runs the real work detached in
+`src/lib/jobs.ts`. The client polls the cheap `GET /api/jobs/:id` until the
+result lands (`runJob()` in `src/lib/client/api.ts`). Every exchange is short,
+a dropped poll simply retries, and nothing depends on one connection surviving.
+
+- **Progress still streams** — the loading UI reads `/api/status` as before, so you still see "Discovering who you follow…" while it works.
+- **Retries don't double-crawl** — each run sends a `requestId`; a retried POST reattaches to the crawl already in flight. "Regenerate" sends a fresh id and really does re-crawl.
+- **In-memory, best-effort** — jobs live in process memory and expire after 15 min. A restart mid-crawl tells the client to start again, which beats a hung spinner. `keepalive.ts` pings `/api/health` during a crawl so the instance isn't reaped underneath it.
+
 ### 1. Crawler (`src/lib/crawler/`)
 Fetches Letterboxd pages under a **coherent per-session browser fingerprint** (`fingerprint.ts`: a stable User-Agent + matching `sec-ch-ua*` Client Hints, pinned to one "impersonation target" — `chrome131` by default, randomly rotated **per session** across 4 known profiles when unpinned, so consecutive crawls don't reuse one static identity). Every crawl follows a real browsing flow: a **top-level warm-up GET** to the homepage (page-load headers, `sec-fetch-site: none`) primes the session before any data call, then every request is an **in-site navigation** (same-origin `sec-fetch-*` + the previous page as `Referer`) — cold `site:none` hits on profile paths are exactly what Letterboxd blocks.
 

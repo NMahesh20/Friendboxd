@@ -1,23 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { classifyMood } from '@/lib/ai/recommender';
 import { aiConfig } from '@/lib/config';
+import { completeJob, createJob } from '@/lib/jobs';
 
 export const runtime = 'nodejs';
-// Leave room for Gemini free-tier rate-limit retries (up to ~60s of waits
-// across the recoverable per-minute bucket) on top of the call itself.
-export const maxDuration = 120;
+// Input validation only — the AI call runs detached behind a job id so the
+// client polls short requests instead of holding one open (see /api/analyze).
+export const maxDuration = 15;
 
 /**
  * POST /api/classify-mood
- * Body: { description: string }
+ * Body: { description: string, requestId?: string }
  *
  * Maps a free-text mood/vibe description to one of the app's Letterboxd
- * genres using Gemini. Returns { genre, aiError } with HTTP 200 even when
- * classification failed (genre: null) so the client silently falls back to
- * local keyword matching.
+ * genres using Gemini. A failed classification still *succeeds* with
+ * { genre: null, aiError } so the client silently falls back to local keyword
+ * matching — a mood description must never block step 3.
+ *
+ * Returns 202 { jobId }; poll GET /api/jobs/:id for the result.
  */
 export async function POST(req: NextRequest) {
-  let body: { description?: unknown };
+  let body: { description?: unknown; requestId?: string };
   try {
     body = await req.json();
   } catch {
@@ -39,7 +42,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { genre, aiError } = await classifyMood(description);
-  if (aiError) console.warn('[api/classify-mood] AI unavailable:', aiError);
-  return NextResponse.json({ genre, aiError });
+  const { jobId, created } = createJob<{ genre: string | null; aiError?: string | null }>(
+    typeof body.requestId === 'string' ? body.requestId : undefined,
+  );
+
+  if (created) {
+    void (async () => {
+      try {
+        const { genre, aiError } = await classifyMood(description);
+        if (aiError) console.warn('[api/classify-mood] AI unavailable:', aiError);
+        completeJob(jobId, { genre, aiError });
+      } catch (err) {
+        // Never fail the job for this route — the caller falls back to local
+        // keyword matching, which is better than surfacing an error.
+        console.warn('[api/classify-mood]', err);
+        completeJob(jobId, { genre: null, aiError: (err as Error).message });
+      }
+    })();
+  }
+
+  return NextResponse.json({ jobId }, { status: 202 });
 }

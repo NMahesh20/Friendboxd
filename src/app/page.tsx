@@ -10,6 +10,7 @@ import { GenreSelector } from '@/components/GenreSelector';
 import { Recommendations } from '@/components/Recommendations';
 import { SessionBar } from '@/components/SessionBar';
 import { Stepper, type StepId } from '@/components/Stepper';
+import { ErrorState } from '@/components/ui/ErrorState';
 import { ToastStack, useToast } from '@/components/ui/Toast';
 import { Spinner } from '@/components/ui/Spinner';
 import { useCrawlStatus } from '@/lib/client/useCrawlStatus';
@@ -173,6 +174,14 @@ export default function Home() {
     if (genre) void runRecommend(genre);
   }, [runRecommend]);
 
+  // Picking a mood failed — send the user back to step 3 so they can pick a
+  // different mood and re-trigger the request. Falls back to step 1 when the
+  // session has no username, since there is nothing to recommend for then.
+  const backToMood = useCallback(() => {
+    setRecommendError(null);
+    setStep(sessionRef.current.username ? 'genre' : 'landing');
+  }, []);
+
   const resetSession = useCallback(() => {
     sessionRef.current.reset();
     setStep('landing');
@@ -267,8 +276,17 @@ export default function Home() {
               onToast={push}
             />
           ) : (
-            <div className="flex min-h-[50vh] items-center justify-center px-4">
-              <p className="text-sm text-red-400">{recommendError ?? 'No recommendations yet.'}</p>
+            <div className="flex min-h-[50vh] items-center justify-center px-4 py-16">
+              <ErrorState
+                title="Couldn’t load your picks"
+                message={recommendError ?? 'No recommendations yet.'}
+                onRetry={session.genre ? regenerate : undefined}
+                action={
+                  <button type="button" className="btn-ghost" onClick={backToMood}>
+                    ← Back to mood
+                  </button>
+                }
+              />
             </div>
           )}
         </>
