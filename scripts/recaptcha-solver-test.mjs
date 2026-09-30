@@ -8,6 +8,14 @@
  * That only happens if the unpacked extension loaded and defeated the
  * challenge Google issued, which is the whole point of shipping it.
  *
+ * This probe deliberately still clicks. The crawler itself is passive
+ * (see solveChallenge in src/lib/crawler/captcha-browser.ts), but Google's demo
+ * issues its challenge on page load and this assertion needs to observe the
+ * widget state directly — the crawler's "page stopped reading as a challenge"
+ * signal cannot tell a solved widget from an unsolved one on this page, whose
+ * title is "ReCAPTCHA demo" and never matches isChallengeHtml(). So the two
+ * answer different questions and keep separate assertions.
+ *
  * This is an integration probe, not a unit test: it needs network access and a
  * real Chromium, so it runs as its own CI job rather than in `npm test`.
  *
@@ -75,7 +83,8 @@ const args = [
   "--disable-dev-shm-usage",
   "--no-sandbox",
   "--headless=new",
-  "--disable-gpu",
+  "--use-gl=angle",
+  "--use-angle=gl",
   "--disable-features=IsolateOrigins,site-per-process",
   "--window-size=1366,900",
   "--lang=en-US",
@@ -104,7 +113,7 @@ async function waitForAnchor(page, timeout) {
   throw new Error("reCAPTCHA anchor iframe never appeared");
 }
 
-// ReCAPTCHA animates the checkbox, so its inner border div can be sitting on
+// reCAPTCHA animates the checkbox, so its inner border div can be sitting on
 // top of the hit point when Playwright tries to click. Focusing and pressing
 // Space routes through the widget's own keyboard handler instead, which is
 // what a real click ends up doing anyway.

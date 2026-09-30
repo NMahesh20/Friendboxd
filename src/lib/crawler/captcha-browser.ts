@@ -14,10 +14,11 @@
 // context design. Keeping them apart means the proven stealth path is
 // untouched and the solver can be switched off with one env var.
 //
-// The extension does click the captcha checkbox — it only handles the
-// challenge that appears after one. So this module clicks it (focus + Space;
-// a plain .click() is intercepted by reCAPTCHA's animating border div) and
-// then polls until the widget reports itself solved.
+// The extension does NOT click the captcha checkbox — it only handles the
+// challenge the provider issues on its own. So this module never drives the
+// widget either: solveChallenge() only reads the page, and treats the challenge
+// as cleared once the document stops reading as one. Synthesized input would
+// itself be a signal, and nothing here needs it.
 //
 // Session handling: a solve here is worth KEEPING. The context stays open with
 // its cf_clearance cookie and is reused for every later request, and callers
@@ -34,6 +35,7 @@ import { extraHeaders, NATIVE_UA, stealthInitScript } from "./browser-identity";
 
 type BrowserContext = import("playwright").BrowserContext;
 type Page = import("playwright").Page;
+type Frame = import("playwright").Frame;
 
 /** Where the Dockerfile unpacks solver.crx; set by EXTENSION_DIR. */
 const EXTENSION_DIR = process.env.EXTENSION_DIR || "/tmp/ext";
@@ -56,7 +58,6 @@ let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** The captcha widget lives in a cross-origin iframe, never the top document. */
 const CAPTCHA_HOST = "recaptcha";
-const CHECKBOX = "#recaptcha-anchor";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -161,83 +162,64 @@ function isChallengeHtml(html: string): boolean {
   );
 }
 
-/** The frame holding the captcha checkbox, if the widget has rendered one. */
-function anchorFrame(page: Page) {
-  return page.frames().find((f) => f.url().includes("/recaptcha/api2/anchor"));
-}
-
 /**
- * Click the captcha checkbox, which is what makes the provider issue the
- * challenge the extension exists to solve. Returns false when no widget is
- * present (a Cloudflare Turnstile has no anchor checkbox — nothing to do, and
- * the caller just waits for the interstitial on its own).
- */
-async function tickCheckbox(page: Page): Promise<boolean> {
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    const frame = anchorFrame(page);
-    if (frame) {
-      const box = frame.locator(CHECKBOX);
-      if ((await box.count().catch(() => 0)) > 0) {
-        // Focus + Space, not .click(): reCAPTCHA's animating border div sits
-        // over the hit point and swallows a synthetic mouse click.
-        await box.focus({ timeout: 5000 }).catch(() => {});
-        await page.keyboard.press("Space").catch(() => {});
-        return true;
-      }
-    }
-    await sleep(250);
-  }
-  return false;
-}
-
-/** True once the widget reports itself solved. */
-async function isWidgetSolved(page: Page): Promise<boolean> {
-  const frame = anchorFrame(page);
-  if (!frame) return false;
-  return (
-    (await frame
-      .locator(`${CHECKBOX}[aria-checked="true"]`)
-      .count()
-      .catch(() => 0)) > 0
-  );
-}
-
-/**
- * Wait out a challenge in this tab, giving the extension its chance to defeat
- * the captcha. Returns the page HTML once the challenge is gone, or null if it
- * never cleared — the caller then falls back to the plain stealth browser.
+ * Poll the tab until the challenge is gone, then return the real page HTML.
+ * Returns null if the wait window runs out, and the caller then falls back to
+ * the plain stealth browser.
+ *
+ * Purely observational: nothing is clicked, focused or key-pressed, so nothing
+ * here can be a synthetic-input signal. The extension is left to do its work
+ * against whatever challenge the provider serves, and this just watches for the
+ * page to come back.
+ *
+ * "Cleared" is one condition: the document no longer reads as a challenge. That
+ * covers both shapes on its own — an interstitial reloads into the real page,
+ * and an embedded widget re-renders its host once the token is issued. Main
+ * frame navigations are counted so the log can distinguish the two.
  */
 async function solveChallenge(page: Page): Promise<string | null> {
-  const ticked = await tickCheckbox(page);
+  let reloads = 0;
+  // Subframe navigations are noise — the recaptcha iframe reloads constantly.
+  const countReload = (frame: Frame) => {
+    if (frame === page.mainFrame()) reloads += 1;
+  };
+  page.on("framenavigated", countReload);
+
   console.warn(
-    `[crawler] challenge detected — giving the solver extension up to ${Math.round(
+    `[crawler] challenge detected — watching for up to ${Math.round(
       crawlerConfig.captchaWaitMs / 1000,
-    )}s (${ticked ? "checkbox clicked" : "no checkbox on this challenge"})`,
+    )}s without touching the page`,
   );
 
   const deadline = Date.now() + crawlerConfig.captchaWaitMs;
-  while (Date.now() < deadline) {
-    await sleep(2000);
-    if (page.isClosed()) return null;
-    let html = "";
-    try {
-      html = await page.content();
-    } catch {
-      // Mid-navigation (the challenge's post-solve reload) — look next tick.
-      continue;
-    }
-    if (html && !isChallengeHtml(html)) {
+  try {
+    while (Date.now() < deadline) {
+      await sleep(2000);
+      if (page.isClosed()) return null;
+
+      let html = "";
+      try {
+        html = await page.content();
+      } catch {
+        // Mid-navigation: the document is mid-replacement, nothing to read yet.
+        continue;
+      }
+      if (!html || isChallengeHtml(html)) continue;
+
       console.info(
-        "[crawler] challenge cleared — continuing with the real page",
+        reloads > 0
+          ? `[crawler] challenge cleared — page reloaded ${reloads}x into the real page`
+          : "[crawler] challenge cleared — continuing with the real page",
       );
       return html;
     }
+    console.warn(
+      "[crawler] challenge did not clear within the wait window; falling back to stealth browser",
+    );
+    return null;
+  } finally {
+    page.off("framenavigated", countReload);
   }
-  console.warn(
-    "[crawler] challenge did not clear; falling back to stealth browser",
-  );
-  return null;
 }
 
 /** Reset the idle countdown so a crawl in flight can't be torn down. */

@@ -15,6 +15,11 @@
 // every later request. It self-heals (relaunches) if Chromium is killed
 // (e.g. an OOM on a small host).
 //
+// It does NOT fight challenges. A 403/interstitial is reported on sight and
+// the session is rotated; no waiting, no extension, no clicking. Fighting a
+// challenge is captcha-browser.ts's job, opt-in via CRAWLER_CAPTCHA_SOLVER=1,
+// and it owns the only challenge wait in the crawler.
+//
 // Memory on small hosts (Render free ≈ 512MB): keep the tab pool tiny, block
 // image/font/media downloads (the DOM src is all the crawl reads — saves
 // ~140MB, measured), and close the whole browser after a quiet period
@@ -22,7 +27,6 @@
 // Chromium forever. The next request simply relaunches it (DNS/TLS/HTTP warm
 // back up within one request).
 
-import { existsSync } from "node:fs";
 import { crawlerConfig, proxyConfig } from "@/lib/config";
 import { getImpersonate, sessionFingerprint } from "./fingerprint";
 
@@ -68,19 +72,15 @@ const CONTEXT_TTL_MS = 10 * 60 * 1000;
  * IPs on Render often are), every session is blocked; don't thrash.
  */
 const MIN_ROTATION_GAP_MS = 30 * 1000;
-/**
- * Where the unpacked captcha-solver extension lives. The Docker image unpacks
- * solver.crx here and sets EXTENSION_DIR; local dev and INSTALL_BROWSER=0
- * images have no extension at all.
- */
-const EXTENSION_DIR = process.env.EXTENSION_DIR || "/tmp/ext";
-/**
- * Only pass Chromium the extension flags when the extension is really there.
- * A path that doesn't exist makes Chromium complain at startup and skip
- * loading, so the browser must run clean when this is absent.
- */
-const HAS_EXTENSION =
-  existsSync(EXTENSION_DIR) && existsSync(`${EXTENSION_DIR}/manifest.json`);
+
+// Note on the captcha-solver extension: this module deliberately does NOT load
+// it. It used to, behind an existence check on EXTENSION_DIR, and that was
+// wrong twice over — the extension only ever completes a solve under
+// launchPersistentContext (measured 0 solves in 4 runs from this launch path vs
+// 4/4 from captcha-browser.ts), and loading it forced the heavier
+// `channel: "chromium"` + `--headless=new` build plus a live service worker on
+// a path whose whole job is keeping plain fetches warm. The solver now lives
+// exclusively in captcha-browser.ts, behind CRAWLER_CAPTCHA_SOLVER=1.
 
 async function getBrowser(): Promise<Browser> {
   if (browserPromise) return browserPromise;
@@ -90,18 +90,11 @@ async function getBrowser(): Promise<Browser> {
     const proxy = proxyConfig.pool[0];
     const browser = await chromium.launch({
       headless: true,
-      // Full Chromium instead of the default headless-shell build. The
-      // headless shell silently ignores --load-extension, so the captcha
-      // solver never loads without this (verified: the extension's
-      // service_worker target only appears with the full build + new headless).
-      ...(HAS_EXTENSION ? { channel: "chromium" } : {}),
       proxy: proxy ? { server: proxy } : undefined,
       args: [
         "--disable-blink-features=AutomationControlled",
         "--disable-dev-shm-usage",
         "--no-sandbox",
-        // New headless mode — the extension flags are only honored here.
-        ...(HAS_EXTENSION ? ["--headless=new"] : []),
         // Known-good from the setup that previously worked in production —
         // restore exactly these. (An experiment dropping these in favor of
         // "real Chromium" flags was flagged by Letterboxd's WAF on the first
@@ -115,19 +108,10 @@ async function getBrowser(): Promise<Browser> {
         "--lang=en-US",
         "--no-first-run",
         "--no-default-browser-check",
-        ...(HAS_EXTENSION
-          ? [
-              `--disable-extensions-except=${EXTENSION_DIR}`,
-              `--load-extension=${EXTENSION_DIR}`,
-            ]
-          : []),
       ],
     });
     console.info(
-      `[crawler] background browser running (${browser.version() ?? "chromium"})` +
-        (HAS_EXTENSION
-          ? ` with solver extension from ${EXTENSION_DIR}`
-          : " (no extension)"),
+      `[crawler] background browser running (${browser.version() ?? "chromium"})`,
     );
     return browser;
   })().catch((err) => {
@@ -365,14 +349,6 @@ function releasePage(page: Page): void {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Max time (ms) to let a Cloudflare challenge solve itself in the live tab
- * before the session is declared blocked. The challenge JS runs in the real
- * browser and normally clears within a few seconds; 30s is generous enough
- * for a slow Turnstile while still bounding the damage of an IP-level block.
- */
-const CHALLENGE_WAIT_MS = 60000;
-
-/**
  * Trigger Letterboxd's lazy-loaded posters (LazyPoster) and wait for a real
  * poster to appear. The initial HTML ships an empty placeholder
  * (`/static/img/empty-poster`); the real poster URL is only swapped in after
@@ -435,52 +411,21 @@ async function waitForPosters(page: Page): Promise<void> {
  * Letterboxd pages embed /cdn-cgi/challenge-platform/... scripts (Cloudflare
  * injects those into EVERY proxied page), so the ONLY reliable signs are the
  * challenge's own copy ("Just a moment" title, "checking your browser").
+ *
+ * A hit means the session is blocked, and callers act on it by flagging the
+ * session for rotation — they do NOT wait the tab out. This module used to hold
+ * the page for up to 60s hoping Cloudflare's own JS would clear itself, which
+ * on a blocked session almost never paid off: it just burned a minute per
+ * request before falling through to the same rotate-and-retry. Fighting a
+ * challenge is CRAWLER_CAPTCHA_SOLVER=1's job (captcha-browser.ts, its own
+ * process, its own CRAWLER_CAPTCHA_WAIT_MS budget) — that budget is now the
+ * only challenge wait in the crawler.
  */
 function isChallengeHtml(html: string): boolean {
   return (
     /<title[^>]*>\s*just a moment/i.test(html) ||
     /checking your browser before accessing|cf-challenge-running/i.test(html)
   );
-}
-
-/**
- * A challenge page is loaded and its Cloudflare JS is running in this tab, so
- * hold the page (no navigation) and give it up to CHALLENGE_WAIT_MS to solve
- * itself — CF clears the cookie and reloads into the real page. Returns that
- * real HTML once the challenge is gone, or null if it never cleared (caller
- * then treats the session as blocked, as before).
- */
-async function solveChallenge(
-  page: Page,
-  waitForPoster: boolean,
-): Promise<string | null> {
-  console.warn(
-    `[crawler] challenge page detected — waiting up to ${CHALLENGE_WAIT_MS / 1000}s for it to solve`,
-  );
-  const deadline = Date.now() + CHALLENGE_WAIT_MS;
-  while (Date.now() < deadline) {
-    await sleep(1000);
-    if (page.isClosed()) return null;
-    let html = "";
-    try {
-      html = await page.content();
-    } catch {
-      // Mid-navigation (the challenge's solved reload) — look again next tick.
-      continue;
-    }
-    if (html && !isChallengeHtml(html)) {
-      if (waitForPoster) await waitForPosters(page);
-      // This session just proved itself, so don't rotate it away from the
-      // cf_clearance cookie it earned (the response listener flags 403s).
-      contextBlocked = false;
-      console.info(
-        "[crawler] challenge solved — continuing with the real page",
-      );
-      return html;
-    }
-  }
-  console.warn("[crawler] challenge did not clear within the wait window");
-  return null;
 }
 
 /**
@@ -551,11 +496,10 @@ async function attemptFetch(
     // as a block: the caller retries once with a rotated session, and the
     // session flag rotates it again before any later fetch.
     if (resp?.status() === 403) {
-      // A 403 is usually the "Just a moment" interstitial, which Cloudflare's
-      // own JS can still solve in this tab — wait it out before giving up on
-      // the session (a solved page just continues the crawl).
-      const solved = await solveChallenge(page, opts.waitForPosters !== false);
-      if (solved) return { html: solved, retry: false };
+      // No waiting on it: this session is blocked, so flag it and let the
+      // caller rotate to a fresh identity and retry. A challenge is only
+      // actually fought when CRAWLER_CAPTCHA_SOLVER=1, which sends the URL to
+      // captcha-browser.ts instead of this path.
       contextBlocked = true;
       return { html: null, retry: true };
     }
@@ -569,12 +513,10 @@ async function attemptFetch(
     // Small human-like pause.
     await sleep(200 + Math.random() * 300);
     const html = await page.content();
-    // A 200-status challenge page also exists. Same wait-then-give-up deal:
-    // the challenge JS is live in this tab, so let it finish and use the real
-    // page it lands on, otherwise flag the session for rotation.
+    // A 200-status challenge page also exists. Same deal: flag the session for
+    // rotation and report the block, so the caller rotates and retries rather
+    // than parking on a page that isn't the content.
     if (isChallengeHtml(html)) {
-      const solved = await solveChallenge(page, opts.waitForPosters !== false);
-      if (solved) return { html: solved, retry: false };
       contextBlocked = true;
       return { html: null, retry: true };
     }
