@@ -53,8 +53,8 @@ ENV NODE_ENV=production \
     # Stealth-browser crawling by default (Chromium ships in the image).
     # Set to `http` for HTTP-only (lightweight) or `browser` to force it.
     CRAWLER_MODE=auto \
-    # Polite rate limit: max requests per sliding window (default 6 per 10s).
-    CRAWLER_RATE_MAX=6 \
+    # Polite rate limit: max requests per sliding window (default 5 per 10s).
+    CRAWLER_RATE_MAX=5 \
     CRAWLER_RATE_WINDOW_MS=10000 \
     # Browser-fingerprint identity: UA + Client Hints + TLS profile all use
     # this impersonation target (chrome131 ships with curl-impersonate v2.2).
