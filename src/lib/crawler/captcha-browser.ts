@@ -14,22 +14,29 @@
 // context design. Keeping them apart means the proven stealth path is
 // untouched and the solver can be switched off with one env var.
 //
-// The extension does NOT click the captcha checkbox — it only handles the
+// The extension does click the captcha checkbox — it only handles the
 // challenge that appears after one. So this module clicks it (focus + Space;
 // a plain .click() is intercepted by reCAPTCHA's animating border div) and
 // then polls until the widget reports itself solved.
 //
+// Session handling: a solve here is worth KEEPING. The context stays open with
+// its cf_clearance cookie and is reused for every later request, and callers
+// are expected not to rotate the plain stealth browser's session on the
+// strength of a challenge this browser already handled (see fetchViaBrowser in
+// letterboxd.ts). Only the idle timeout or an explicit close tears it down.
+//
 // Memory: one context, one tab, torn down after crawlerConfig's idle window,
 // with the on-disk profile deleted alongside it.
 
-import { existsSync, rmSync } from 'node:fs';
-import { crawlerConfig, proxyConfig } from '@/lib/config';
+import { existsSync, rmSync } from "node:fs";
+import { crawlerConfig, proxyConfig } from "@/lib/config";
+import { extraHeaders, NATIVE_UA, stealthInitScript } from "./browser-identity";
 
-type BrowserContext = import('playwright').BrowserContext;
-type Page = import('playwright').Page;
+type BrowserContext = import("playwright").BrowserContext;
+type Page = import("playwright").Page;
 
 /** Where the Dockerfile unpacks solver.crx; set by EXTENSION_DIR. */
-const EXTENSION_DIR = process.env.EXTENSION_DIR || '/tmp/ext';
+const EXTENSION_DIR = process.env.EXTENSION_DIR || "/tmp/ext";
 
 /** The extension is the whole point — without it there's nothing to run. */
 const HAS_EXTENSION =
@@ -40,8 +47,7 @@ const HAS_EXTENSION =
  * the operator's choice, and the extension has to physically exist (local dev
  * and INSTALL_BROWSER=0 images have none).
  */
-export const captchaEnabled =
-  crawlerConfig.captchaSolver && HAS_EXTENSION;
+export const captchaEnabled = crawlerConfig.captchaSolver && HAS_EXTENSION;
 
 let contextPromise: Promise<BrowserContext> | null = null;
 let profileInUse = false;
@@ -49,8 +55,8 @@ let lastActivityAt = Date.now();
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** The captcha widget lives in a cross-origin iframe, never the top document. */
-const CAPTCHA_HOST = 'recaptcha';
-const CHECKBOX = '#recaptcha-anchor';
+const CAPTCHA_HOST = "recaptcha";
+const CHECKBOX = "#recaptcha-anchor";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -70,7 +76,7 @@ async function getContext(): Promise<BrowserContext> {
     await sleep(250);
   }
   contextPromise = (async () => {
-    const { chromium } = await import('playwright');
+    const { chromium } = await import("playwright");
     const proxy = proxyConfig.pool[0];
     const context = await chromium.launchPersistentContext(
       crawlerConfig.captchaProfileDir,
@@ -78,28 +84,42 @@ async function getContext(): Promise<BrowserContext> {
         headless: true,
         // Full Chromium, not Playwright's default chromium-headless-shell,
         // which silently ignores --load-extension.
-        channel: 'chromium',
+        channel: "chromium",
         proxy: proxy ? { server: proxy } : undefined,
         args: [
-          '--disable-blink-features=AutomationControlled',
-          '--disable-dev-shm-usage',
-          '--no-sandbox',
-          '--headless=new',
-          '--disable-gpu',
-          '--window-size=1366,900',
-          '--lang=en-US',
-          '--no-first-run',
-          '--no-default-browser-check',
+          "--disable-blink-features=AutomationControlled",
+          "--disable-dev-shm-usage",
+          "--no-sandbox",
+          "--headless=new",
+          // NOT --disable-gpu: that forces ANGLE onto SwiftShader, and a
+          // software renderer is one of the strongest bot signals reCAPTCHA
+          // scores. Prefer a real GL backend and fall back to SwiftShader only
+          // when the host has none (stealthInitScript also reports a desktop
+          // GPU, since a container has no honest one to report).
+          "--use-gl=angle",
+          "--use-angle=gl",
+          "--window-size=1366,900",
+          "--no-first-run",
+          "--no-default-browser-check",
           `--disable-extensions-except=${EXTENSION_DIR}`,
           `--load-extension=${EXTENSION_DIR}`,
         ],
+        // Native Chromium identity: the binary reports its own brand list,
+        // platform and GPU, so the UA override only has to strip the
+        // "Headless" token. Claiming a different Chrome version here is what
+        // made the wire and the page contradict each other — see
+        // browser-identity.ts.
+        userAgent: NATIVE_UA,
+        extraHTTPHeaders: extraHeaders(),
         viewport: { width: 1366, height: 900 },
-        locale: 'en-US',
+        colorScheme: "dark",
+        timezoneId: "Asia/Kolkata",
       },
     );
+    await context.addInitScript(stealthInitScript);
     profileInUse = true;
     console.info(
-      `[crawler] captcha browser running (${context.browser()?.version() ?? 'chromium'}) with solver extension from ${EXTENSION_DIR}`,
+      `[crawler] captcha browser running (${context.browser()?.version() ?? "chromium"}) with solver extension from ${EXTENSION_DIR}`,
     );
     return context;
   })().catch((err) => {
@@ -120,13 +140,13 @@ async function getContext(): Promise<BrowserContext> {
  */
 async function applyAssetBlocking(context: BrowserContext): Promise<void> {
   if (!crawlerConfig.blockAssets) return;
-  await context.route('**/*', (route) => {
+  await context.route("**/*", (route) => {
     const url = route.request().url();
-    if (url.includes(CAPTCHA_HOST) || url.includes('gstatic.com/recaptcha')) {
+    if (url.includes(CAPTCHA_HOST) || url.includes("gstatic.com/recaptcha")) {
       return route.continue();
     }
     const type = route.request().resourceType();
-    if (type === 'image' || type === 'font' || type === 'media') {
+    if (type === "image" || type === "font" || type === "media") {
       return route.abort();
     }
     return route.continue();
@@ -143,9 +163,7 @@ function isChallengeHtml(html: string): boolean {
 
 /** The frame holding the captcha checkbox, if the widget has rendered one. */
 function anchorFrame(page: Page) {
-  return page
-    .frames()
-    .find((f) => f.url().includes('/recaptcha/api2/anchor'));
+  return page.frames().find((f) => f.url().includes("/recaptcha/api2/anchor"));
 }
 
 /**
@@ -164,7 +182,7 @@ async function tickCheckbox(page: Page): Promise<boolean> {
         // Focus + Space, not .click(): reCAPTCHA's animating border div sits
         // over the hit point and swallows a synthetic mouse click.
         await box.focus({ timeout: 5000 }).catch(() => {});
-        await page.keyboard.press('Space').catch(() => {});
+        await page.keyboard.press("Space").catch(() => {});
         return true;
       }
     }
@@ -195,14 +213,14 @@ async function solveChallenge(page: Page): Promise<string | null> {
   console.warn(
     `[crawler] challenge detected — giving the solver extension up to ${Math.round(
       crawlerConfig.captchaWaitMs / 1000,
-    )}s (${ticked ? 'checkbox clicked' : 'no checkbox on this challenge'})`,
+    )}s (${ticked ? "checkbox clicked" : "no checkbox on this challenge"})`,
   );
 
   const deadline = Date.now() + crawlerConfig.captchaWaitMs;
   while (Date.now() < deadline) {
     await sleep(2000);
     if (page.isClosed()) return null;
-    let html = '';
+    let html = "";
     try {
       html = await page.content();
     } catch {
@@ -210,11 +228,15 @@ async function solveChallenge(page: Page): Promise<string | null> {
       continue;
     }
     if (html && !isChallengeHtml(html)) {
-      console.info('[crawler] challenge cleared — continuing with the real page');
+      console.info(
+        "[crawler] challenge cleared — continuing with the real page",
+      );
       return html;
     }
   }
-  console.warn('[crawler] challenge did not clear; falling back to stealth browser');
+  console.warn(
+    "[crawler] challenge did not clear; falling back to stealth browser",
+  );
   return null;
 }
 
@@ -235,10 +257,13 @@ function recheckIdle(): void {
     console.info(
       `[crawler] captcha browser idle ${Math.floor(idleMs / 1000)}s — closing to free memory`,
     );
-    void closeCaptchaBrowser('idle');
+    void closeCaptchaBrowser("idle");
     return;
   }
-  idleTimer = setTimeout(recheckIdle, crawlerConfig.browserIdleTimeoutMs - idleMs);
+  idleTimer = setTimeout(
+    recheckIdle,
+    crawlerConfig.browserIdleTimeoutMs - idleMs,
+  );
   idleTimer.unref?.();
 }
 
@@ -247,7 +272,9 @@ function recheckIdle(): void {
  * be closed while keeping the process warm (it owns it), so this is a full
  * teardown — the next fetch relaunches.
  */
-export async function closeCaptchaBrowser(reason = 'explicit close'): Promise<void> {
+export async function closeCaptchaBrowser(
+  reason = "explicit close",
+): Promise<void> {
   if (idleTimer) {
     clearTimeout(idleTimer);
     idleTimer = null;
@@ -296,7 +323,7 @@ export async function fetchHtmlWithCaptcha(
     await applyAssetBlocking(context);
 
     const resp = await page.goto(url, {
-      waitUntil: 'domcontentloaded',
+      waitUntil: "domcontentloaded",
       timeout: crawlerConfig.timeoutMs,
     });
 
@@ -308,14 +335,16 @@ export async function fetchHtmlWithCaptcha(
     return await page.content();
   } catch (err) {
     console.warn(
-      '[crawler] captcha browser fetch failed:',
+      "[crawler] captcha browser fetch failed:",
       err instanceof Error ? err.message : err,
     );
     return null;
   } finally {
-    // Reset the idle countdown so a crawl in flight isn't torn down. The tab
-    // is deliberately left open: this browser is persistent, so a relaunch
-    // would mean a cold profile and another 60-150s of solving.
+    // Reset the idle countdown so a crawl in flight isn't torn down. On success
+    // we deliberately KEEP the persistent context and its tab alive: that
+    // session just earned a cf_clearance cookie, and reusing it is the whole
+    // point of a long-lived browser. Teardown happens only on the idle timeout
+    // or an explicit closeCaptchaBrowser().
     touchActivity();
   }
 }

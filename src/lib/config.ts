@@ -1,7 +1,7 @@
 // ─── Runtime configuration (server-side) ────────────────────────────────
 
 export interface CrawlerConfig {
-  mode: 'auto' | 'http' | 'browser';
+  mode: "auto" | "http" | "browser";
   maxPages: number;
   delayMs: number;
   timeoutMs: number;
@@ -82,12 +82,12 @@ export interface ProxyConfig {
 }
 
 function int(value: string | undefined, fallback: number): number {
-  const n = Number.parseInt(value ?? '', 10);
+  const n = Number.parseInt(value ?? "", 10);
   return Number.isFinite(n) ? n : fallback;
 }
 
 export const crawlerConfig: CrawlerConfig = {
-  mode: (process.env.CRAWLER_MODE as CrawlerConfig['mode']) || 'auto',
+  mode: (process.env.CRAWLER_MODE as CrawlerConfig["mode"]) || "auto",
   maxPages: int(process.env.CRAWLER_MAX_PAGES, 3),
   // Small inter-page gap; the global rate limiter is the real throttle.
   delayMs: int(process.env.CRAWLER_DELAY_MS, 200),
@@ -118,18 +118,19 @@ export const crawlerConfig: CrawlerConfig = {
   browserIdleTimeoutMs: int(process.env.CRAWLER_BROWSER_IDLE_MS, 5 * 60 * 1000),
   // Block image/font/media downloads in the browser context — the poster src
   // is set by JS regardless, so this mainly saves memory (see interface).
-  blockAssets: (process.env.CRAWLER_BLOCK_ASSETS ?? '1') !== '0',
+  blockAssets: (process.env.CRAWLER_BLOCK_ASSETS ?? "1") !== "0",
   // Captcha-solver browser: opt-in with CRAWLER_CAPTCHA_SOLVER=1. Off by
   // default because it holds a second Chromium open and only earns its keep on
   // hosts that actually see image challenges. Set CRAWLER_CAPTCHA_SOLVER=0 to
   // force it off even where the extension is present.
-  captchaSolver: process.env.CRAWLER_CAPTCHA_SOLVER === '1',
+  captchaSolver: process.env.CRAWLER_CAPTCHA_SOLVER === "1",
   // A solve grinds through several rounds of tile swapping; measured 65-142s
   // against Google's demo, so budget generously. Past this the strategy gives
   // up and the caller falls back to the plain stealth browser.
-  captchaWaitMs: int(process.env.CRAWLER_CAPTCHA_WAIT_MS, 180000),
+  captchaWaitMs: int(process.env.CRAWLER_CAPTCHA_WAIT_MS, 80000),
   captchaProfileDir:
-    process.env.CRAWLER_CAPTCHA_PROFILE_DIR || '/tmp/friendboxd-captcha-profile',
+    process.env.CRAWLER_CAPTCHA_PROFILE_DIR ||
+    "/tmp/friendboxd-captcha-profile",
 };
 
 export const aiConfig: AiConfig = {
@@ -137,8 +138,10 @@ export const aiConfig: AiConfig = {
   // as a fallback so existing deployments keep working during migration —
   // GEMINI_API_KEY wins when both are set.
   apiKey: process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || null,
-  baseUrl: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
-  model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
+  baseUrl:
+    process.env.GEMINI_BASE_URL ||
+    "https://generativelanguage.googleapis.com/v1beta",
+  model: process.env.GEMINI_MODEL || "gemini-3.5-flash",
   maxSuggestedFilms: int(process.env.AI_MAX_SUGGESTED, 8),
 };
 
@@ -146,13 +149,13 @@ export const cacheConfig: CacheConfig = {
   // Cache lives in the repo (.cache, gitignored) locally, or wherever
   // CACHE_DIR points (e.g. /tmp in containers). Ephemeral by design — it's
   // a 1h crawl cache, not durable data.
-  dir: process.env.CACHE_DIR || '.cache',
+  dir: process.env.CACHE_DIR || ".cache",
   ttlMs: int(process.env.CACHE_TTL_MS, 60 * 60 * 1000),
 };
 
 export const proxyConfig: ProxyConfig = {
-  pool: (process.env.PROXY_POOL ?? '')
-    .split(',')
+  pool: (process.env.PROXY_POOL ?? "")
+    .split(",")
     .map((p) => p.trim())
     .filter(Boolean),
   maxTries: int(process.env.PROXY_MAX_TRIES, 3),
