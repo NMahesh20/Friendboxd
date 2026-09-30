@@ -67,6 +67,12 @@ ENV NODE_ENV=production \
     # Where the captcha-solver extension is unpacked (see the INSTALL_BROWSER
     # step below). browser.ts only passes Chromium the --load-extension flags
     # when this directory actually contains an unpacked extension.
+    # Captcha solver: opt-in. 0 = the plain stealth browser only — no solver
+    # browser is launched AND the extension stays unloaded, so the crawl costs
+    # exactly one Chromium. 1 additionally starts the persistent solver browser
+    # (captcha-browser.ts), which owns the only challenge wait in the crawler
+    # (budget: CRAWLER_CAPTCHA_WAIT_MS).
+    CRAWLER_CAPTCHA_SOLVER=0 \
     EXTENSION_DIR=/tmp/ext
 
 # Copy the minimal standalone server + static assets.

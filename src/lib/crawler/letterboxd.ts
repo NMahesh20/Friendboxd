@@ -8,7 +8,7 @@ import type { AnyNode } from 'domhandler';
 import { crawlerConfig } from '@/lib/config';
 import { fetchHtml, HttpFetchError } from './http';
 import { fetchHtmlStealth, rotateBrowserSession } from './browser';
-import { captchaEnabled, closeCaptchaBrowser, fetchHtmlWithCaptcha } from './captcha-browser';
+import { captchaEnabled, fetchHtmlWithCaptcha } from './captcha-browser';
 import { rateLimiter } from './rate-limiter';
 import { setCrawlPhase, setCrawlUser, setCrawlFilm } from '@/lib/crawl-status';
 import { genreSlug } from '@/lib/utils/genres';
@@ -62,17 +62,21 @@ export class PrivateProfileError extends Error {
  * only strategy that can beat an image challenge, but it's slower and holds a
  * second Chromium open, so it goes first only when explicitly enabled and the
  * proven stealth path still handles everything else.
+ *
+ * `captchaWon` reports whether the solver cleared a challenge, as opposed to
+ * the page just loading cleanly. The caller uses it to decide whether the
+ * stealth browser's session is still worth keeping.
  */
 async function fetchViaBrowser(
   url: string,
   opts: { waitForPosters?: boolean } = {},
-): Promise<string | null> {
+): Promise<{ html: string | null; captchaWon: boolean }> {
   if (captchaEnabled) {
     const html = await fetchHtmlWithCaptcha(url, opts);
-    if (html) return html;
+    if (html) return { html, captchaWon: true };
     console.warn('[crawler] captcha browser gave up; falling back to stealth');
   }
-  return fetchHtmlStealth(url, opts);
+  return { html: await fetchHtmlStealth(url, opts), captchaWon: false };
 }
 
 async function getHtml(
@@ -86,7 +90,7 @@ async function getHtml(
   await rateLimiter.acquire();
   const mode = crawlerConfig.mode;
   if (mode === 'browser') {
-    const html = await fetchViaBrowser(url, opts);
+    const { html } = await fetchViaBrowser(url, opts);
     if (html) return html;
     // The browser served a block/challenge (or is unavailable) — expose it
     // like the HTTP strategy does so the caller can degrade gracefully
@@ -99,17 +103,30 @@ async function getHtml(
   } catch (err) {
     console.warn('[crawler] HTTP failed, browser fallback:', url, (err as Error).message);
     if (mode === 'http') throw err;
-    // A 403 is Cloudflare's "Just a moment" challenge — session-based, so a
-    // fallback in the SAME flagged session would fail too. Rotate to a fresh
-    // identity first, then let the browser try.
+    // A 403 is Cloudflare's "Just a moment" challenge. Try the captcha-solver
+    // browser FIRST when it's enabled: it runs a SEPARATE persistent browser,
+    // so the stealth session is untouched and a solve means we keep using that
+    // session for the rest of the crawl instead of throwing it away.
+    if (err instanceof HttpFetchError && err.status === 403 && captchaEnabled) {
+      const first = await fetchViaBrowser(url, opts);
+      if (first.html) return first.html;
+      // The solver couldn't clear it either — now the stealth session really
+      // is suspect, so rotate to a fresh identity and retry once.
+      rotateBrowserSession();
+      const retry = await fetchViaBrowser(url, opts);
+      if (retry.html) return retry.html;
+      throw err;
+    }
+    // A 403 without the solver (or any other failure) — a fallback in the SAME
+    // flagged session would fail too, so rotate to a fresh identity first.
     if (err instanceof HttpFetchError && err.status === 403) {
       rotateBrowserSession();
-      const html = await fetchViaBrowser(url, opts);
+      const { html } = await fetchViaBrowser(url, opts);
       if (html) return html;
       throw err;
     }
     // auto → try stealth browser as fallback.
-    const html = await fetchViaBrowser(url, opts);
+    const { html } = await fetchViaBrowser(url, opts);
     if (html) return html;
     throw err;
   }
