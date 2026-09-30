@@ -57,26 +57,31 @@ export class PrivateProfileError extends Error {
 // ─── HTML fetching with stealth fallback ────────────────────────────────
 
 /**
- * Run a URL through the captcha-solver browser (when enabled), falling back to
- * the plain stealth browser if it can't deliver. The solver browser is the
- * only strategy that can beat an image challenge, but it's slower and holds a
- * second Chromium open, so it goes first only when explicitly enabled and the
- * proven stealth path still handles everything else.
- *
- * `captchaWon` reports whether the solver cleared a challenge, as opposed to
- * the page just loading cleanly. The caller uses it to decide whether the
- * stealth browser's session is still worth keeping.
+ * Run a URL through the captcha-solver browser. Returns null when the solver
+ * can't deliver — it then closes itself, so the caller can fall back to the
+ * plain stealth browser without a second Chromium competing for memory.
+ */
+async function fetchViaSolver(
+  url: string,
+  opts: { waitForPosters?: boolean } = {},
+): Promise<string | null> {
+  if (!captchaEnabled) return null;
+  const html = await fetchHtmlWithCaptcha(url, opts);
+  if (!html) console.warn('[crawler] captcha browser gave up; falling back to stealth');
+  return html;
+}
+
+/**
+ * The default browser path: the solver when it's switched on, otherwise the
+ * plain stealth browser. The solver goes first because it is the only strategy
+ * that can beat an image challenge; the stealth path still handles everything
+ * else, so nothing is lost when the solver is off or declines.
  */
 async function fetchViaBrowser(
   url: string,
   opts: { waitForPosters?: boolean } = {},
-): Promise<{ html: string | null; captchaWon: boolean }> {
-  if (captchaEnabled) {
-    const html = await fetchHtmlWithCaptcha(url, opts);
-    if (html) return { html, captchaWon: true };
-    console.warn('[crawler] captcha browser gave up; falling back to stealth');
-  }
-  return { html: await fetchHtmlStealth(url, opts), captchaWon: false };
+): Promise<string | null> {
+  return (await fetchViaSolver(url, opts)) ?? (await fetchHtmlStealth(url, opts));
 }
 
 async function getHtml(
@@ -90,7 +95,7 @@ async function getHtml(
   await rateLimiter.acquire();
   const mode = crawlerConfig.mode;
   if (mode === 'browser') {
-    const { html } = await fetchViaBrowser(url, opts);
+    const html = await fetchViaBrowser(url, opts);
     if (html) return html;
     // The browser served a block/challenge (or is unavailable) — expose it
     // like the HTTP strategy does so the caller can degrade gracefully
@@ -108,25 +113,28 @@ async function getHtml(
     // so the stealth session is untouched and a solve means we keep using that
     // session for the rest of the crawl instead of throwing it away.
     if (err instanceof HttpFetchError && err.status === 403 && captchaEnabled) {
-      const first = await fetchViaBrowser(url, opts);
-      if (first.html) return first.html;
-      // The solver couldn't clear it either — now the stealth session really
-      // is suspect, so rotate to a fresh identity and retry once.
+      const solved = await fetchViaSolver(url, opts);
+      if (solved) return solved;
+      // The solver failed and closed itself. Now the stealth session is the one
+      // worth distrusting: rotate to a fresh identity and retry with the stealth
+      // browser DIRECTLY. Going back through fetchViaBrowser here would relaunch
+      // the solver and spend a second full wait window on a challenge this run
+      // has already failed to beat.
       rotateBrowserSession();
-      const retry = await fetchViaBrowser(url, opts);
-      if (retry.html) return retry.html;
+      const retried = await fetchHtmlStealth(url, opts);
+      if (retried) return retried;
       throw err;
     }
     // A 403 without the solver (or any other failure) — a fallback in the SAME
     // flagged session would fail too, so rotate to a fresh identity first.
     if (err instanceof HttpFetchError && err.status === 403) {
       rotateBrowserSession();
-      const { html } = await fetchViaBrowser(url, opts);
+      const html = await fetchHtmlStealth(url, opts);
       if (html) return html;
       throw err;
     }
     // auto → try stealth browser as fallback.
-    const { html } = await fetchViaBrowser(url, opts);
+    const html = await fetchViaBrowser(url, opts);
     if (html) return html;
     throw err;
   }

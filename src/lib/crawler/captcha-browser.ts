@@ -282,13 +282,23 @@ export async function closeCaptchaBrowser(
 
 /**
  * Fetch a page through the captcha-solver browser. Returns null when this
- * strategy can't produce usable HTML (no extension, launch failure, or the
- * challenge outlived the wait window) so the caller can fall back to the plain
+ * strategy can't produce usable HTML, so the caller can fall back to the plain
  * stealth browser.
  *
+ * The browser is torn down whenever it fails. Holding it open after a failed
+ * challenge is actively harmful: the tab is parked on a challenge page, so every
+ * later fetch reuses a poisoned tab and burns the full wait window again on a
+ * challenge we already know this session can't beat. Closing also releases the
+ * Chromium and its several-hundred-MB profile before the fallback browser
+ * starts, which matters on the small hosts this runs on.
+ *
+ * A SUCCESSFUL solve is the opposite case and is deliberately kept: that
+ * session just earned its clearance cookie, so the context and its tab stay
+ * warm for every later request (see the session handling note at the top).
+ *
  * Deliberately narrower than fetchHtmlStealth: no session rotation, no poster
- * waiting. Its only job is to out-wait a captcha that the cheaper strategy
- * couldn't clear.
+ * waiting. Its only job is to out-wait a captcha the cheaper strategy couldn't
+ * clear.
  */
 export async function fetchHtmlWithCaptcha(
   url: string,
@@ -296,12 +306,13 @@ export async function fetchHtmlWithCaptcha(
 ): Promise<string | null> {
   if (!captchaEnabled) return null;
   touchActivity();
-  let page: Page | null = null;
+  // Only re-arm the idle countdown if the browser is still standing at the end.
+  let kept = false;
   try {
     const context = await getContext();
     // launchPersistentContext opens a page up front; reuse it rather than
     // adding a second tab (each tab is a live renderer holding memory).
-    page = context.pages()[0] ?? (await context.newPage());
+    const page = context.pages()[0] ?? (await context.newPage());
     await applyAssetBlocking(context);
 
     const resp = await page.goto(url, {
@@ -312,21 +323,25 @@ export async function fetchHtmlWithCaptcha(
     // Playwright does NOT throw on a 403, so without this the challenge HTML
     // would be parsed as an empty result and silently kill the crawl.
     if (resp?.status() === 403 || isChallengeHtml(await page.content())) {
-      return await solveChallenge(page);
+      const solved = await solveChallenge(page);
+      if (!solved) {
+        await closeCaptchaBrowser("challenge outlived the wait window");
+        return null;
+      }
+      kept = true;
+      return solved;
     }
+    kept = true;
     return await page.content();
   } catch (err) {
     console.warn(
       "[crawler] captcha browser fetch failed:",
       err instanceof Error ? err.message : err,
     );
+    // A launch or navigation failure leaves the context unusable too.
+    await closeCaptchaBrowser("fetch failed");
     return null;
   } finally {
-    // Reset the idle countdown so a crawl in flight isn't torn down. On success
-    // we deliberately KEEP the persistent context and its tab alive: that
-    // session just earned a cf_clearance cookie, and reusing it is the whole
-    // point of a long-lived browser. Teardown happens only on the idle timeout
-    // or an explicit closeCaptchaBrowser().
-    touchActivity();
+    if (kept) touchActivity();
   }
 }
