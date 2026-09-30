@@ -38,6 +38,24 @@ export interface CrawlerConfig {
    * without hurting results. Disable with CRAWLER_BLOCK_ASSETS=0.
    */
   blockAssets: boolean;
+  /**
+   * Run the captcha-solver browser strategy (a full Chromium with the unpacked
+   * solver extension) ahead of the plain stealth browser. It launches via
+   * launchPersistentContext, which is the only launch mode where the
+   * extension actually completes a solve — verified against Google's reCAPTCHA
+   * demo, see scripts/recaptcha-solver-test.mjs. Costs a warm Chromium plus a
+   * 60-150s solve window, so it is opt-in and falls back to the normal stealth
+   * browser whenever it can't produce a page.
+   */
+  captchaSolver: boolean;
+  /** Max time (ms) to let the solver extension defeat a challenge. */
+  captchaWaitMs: number;
+  /**
+   * On-disk Chromium profile for the solver browser. A persistent context needs
+   * a real directory; it is deleted on teardown because it carries Chromium
+   * caches worth hundreds of MB.
+   */
+  captchaProfileDir: string;
 }
 
 export interface AiConfig {
@@ -101,6 +119,17 @@ export const crawlerConfig: CrawlerConfig = {
   // Block image/font/media downloads in the browser context — the poster src
   // is set by JS regardless, so this mainly saves memory (see interface).
   blockAssets: (process.env.CRAWLER_BLOCK_ASSETS ?? '1') !== '0',
+  // Captcha-solver browser: opt-in with CRAWLER_CAPTCHA_SOLVER=1. Off by
+  // default because it holds a second Chromium open and only earns its keep on
+  // hosts that actually see image challenges. Set CRAWLER_CAPTCHA_SOLVER=0 to
+  // force it off even where the extension is present.
+  captchaSolver: process.env.CRAWLER_CAPTCHA_SOLVER === '1',
+  // A solve grinds through several rounds of tile swapping; measured 65-142s
+  // against Google's demo, so budget generously. Past this the strategy gives
+  // up and the caller falls back to the plain stealth browser.
+  captchaWaitMs: int(process.env.CRAWLER_CAPTCHA_WAIT_MS, 180000),
+  captchaProfileDir:
+    process.env.CRAWLER_CAPTCHA_PROFILE_DIR || '/tmp/friendboxd-captcha-profile',
 };
 
 export const aiConfig: AiConfig = {

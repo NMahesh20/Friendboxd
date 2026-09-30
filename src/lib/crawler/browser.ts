@@ -22,14 +22,15 @@
 // Chromium forever. The next request simply relaunches it (DNS/TLS/HTTP warm
 // back up within one request).
 
-import { crawlerConfig, proxyConfig } from '@/lib/config';
-import { getImpersonate, sessionFingerprint } from './fingerprint';
+import { existsSync } from "node:fs";
+import { crawlerConfig, proxyConfig } from "@/lib/config";
+import { getImpersonate, sessionFingerprint } from "./fingerprint";
 
 // Playwright is a heavy dependency; import lazily so the app still boots
 // if the browser binary isn't installed yet.
-type Browser = import('playwright').Browser;
-type BrowserContext = import('playwright').BrowserContext;
-type Page = import('playwright').Page;
+type Browser = import("playwright").Browser;
+type BrowserContext = import("playwright").BrowserContext;
+type Page = import("playwright").Page;
 
 /**
  * Max tabs kept open in the background browser. Each open tab is a live
@@ -67,36 +68,67 @@ const CONTEXT_TTL_MS = 10 * 60 * 1000;
  * IPs on Render often are), every session is blocked; don't thrash.
  */
 const MIN_ROTATION_GAP_MS = 30 * 1000;
+/**
+ * Where the unpacked captcha-solver extension lives. The Docker image unpacks
+ * solver.crx here and sets EXTENSION_DIR; local dev and INSTALL_BROWSER=0
+ * images have no extension at all.
+ */
+const EXTENSION_DIR = process.env.EXTENSION_DIR || "/tmp/ext";
+/**
+ * Only pass Chromium the extension flags when the extension is really there.
+ * A path that doesn't exist makes Chromium complain at startup and skip
+ * loading, so the browser must run clean when this is absent.
+ */
+const HAS_EXTENSION =
+  existsSync(EXTENSION_DIR) && existsSync(`${EXTENSION_DIR}/manifest.json`);
 
 async function getBrowser(): Promise<Browser> {
   if (browserPromise) return browserPromise;
   browserPromise = (async () => {
-    const { chromium } = await import('playwright');
+    const { chromium } = await import("playwright");
     // Route the browser through the first proxy in the pool (if any).
     const proxy = proxyConfig.pool[0];
     const browser = await chromium.launch({
       headless: true,
+      // Full Chromium instead of the default headless-shell build. The
+      // headless shell silently ignores --load-extension, so the captcha
+      // solver never loads without this (verified: the extension's
+      // service_worker target only appears with the full build + new headless).
+      ...(HAS_EXTENSION ? { channel: "chromium" } : {}),
       proxy: proxy ? { server: proxy } : undefined,
       args: [
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--no-sandbox',
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+        "--no-sandbox",
+        // New headless mode — the extension flags are only honored here.
+        ...(HAS_EXTENSION ? ["--headless=new"] : []),
         // Known-good from the setup that previously worked in production —
         // restore exactly these. (An experiment dropping these in favor of
         // "real Chromium" flags was flagged by Letterboxd's WAF on the first
         // request; evidence over theory, don't re-"fix" without deployment
         // proof.) Site isolation off also keeps renderer processes down,
         // which is the biggest browser-side memory lever.
-        '--disable-gpu',
-        '--disable-features=IsolateOrigins,site-per-process',
+        "--disable-gpu",
+        "--disable-features=IsolateOrigins,site-per-process",
         // Match the browser window to the viewport set on the context.
-        '--window-size=1366,900',
-        '--lang=en-US',
-        '--no-first-run',
-        '--no-default-browser-check',
+        "--window-size=1366,900",
+        "--lang=en-US",
+        "--no-first-run",
+        "--no-default-browser-check",
+        ...(HAS_EXTENSION
+          ? [
+              `--disable-extensions-except=${EXTENSION_DIR}`,
+              `--load-extension=${EXTENSION_DIR}`,
+            ]
+          : []),
       ],
     });
-    console.info(`[crawler] background browser running (${browser.version() ?? 'chromium'})`);
+    console.info(
+      `[crawler] background browser running (${browser.version() ?? "chromium"})` +
+        (HAS_EXTENSION
+          ? ` with solver extension from ${EXTENSION_DIR}`
+          : " (no extension)"),
+    );
     return browser;
   })().catch((err) => {
     // Allow a retry on the next request instead of caching a rejected promise.
@@ -121,16 +153,16 @@ async function getContext(): Promise<BrowserContext> {
       // with Chromium's native hints + a Linux UA was flagged by Letterboxd's
       // WAF on the very first request — don't "fix" it again without
       // evidence from the actual deployment.
-      const fp = sessionFingerprint(getImpersonate('letterboxd'));
+      const fp = sessionFingerprint(getImpersonate("letterboxd"));
       const context = await browser.newContext({
         userAgent: fp.userAgent,
         viewport: { width: 1366, height: 900 },
-        locale: 'en-US',
-        timezoneId: 'America/New_York',
-        colorScheme: 'dark',
+        locale: "en-US",
+        timezoneId: "America/New_York",
+        colorScheme: "dark",
         extraHTTPHeaders: {
           ...fp.commonHeaders,
-          'Accept-Language': 'en-US,en;q=0.5',
+          "Accept-Language": "en-US,en;q=0.5",
         },
       });
       // Memory: block image/font/media downloads. Letterboxd's lazy-poster JS
@@ -138,17 +170,22 @@ async function getContext(): Promise<BrowserContext> {
       // crawler only reads the DOM src — so this saves ~140MB of decoded
       // images per crawl without changing results (verified locally).
       if (crawlerConfig.blockAssets) {
-        await context.route('**/*', (route) => {
+        await context.route("**/*", (route) => {
           const rt = route.request().resourceType();
-          if (rt === 'image' || rt === 'font' || rt === 'media') return route.abort();
+          if (rt === "image" || rt === "font" || rt === "media")
+            return route.abort();
           return route.continue();
         });
       }
       // Mask automation signals on every page/navigation in this session.
       await context.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] as unknown as PluginArray });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+        Object.defineProperty(navigator, "plugins", {
+          get: () => [1, 2, 3, 4, 5] as unknown as PluginArray,
+        });
+        Object.defineProperty(navigator, "languages", {
+          get: () => ["en-US", "en"],
+        });
       });
       // No front-page warm-up here — the previous production setup made the
       // first real request directly against the target URL and that's the
@@ -177,7 +214,9 @@ function rotateContext(reason: string): void {
   contextRequests = 0;
   contextBlocked = false;
   lastRotationAt = Date.now();
-  console.warn(`[crawler] rotating browser session (was ${wasRequests} requests): ${reason}`);
+  console.warn(
+    `[crawler] rotating browser session (was ${wasRequests} requests): ${reason}`,
+  );
   void (async () => {
     if (!cp) return;
     try {
@@ -190,9 +229,11 @@ function rotateContext(reason: string): void {
 /** Why the current session should be replaced, or null when it's fine. */
 function rotationReason(): string | null {
   if (Date.now() - lastRotationAt < MIN_ROTATION_GAP_MS) return null;
-  if (contextBlocked) return 'block/challenge';
-  if (contextRequests >= CONTEXT_REQUEST_LIMIT) return `request cap (${contextRequests})`;
-  if (contextCreatedAt > 0 && Date.now() - contextCreatedAt >= CONTEXT_TTL_MS) return 'session TTL';
+  if (contextBlocked) return "block/challenge";
+  if (contextRequests >= CONTEXT_REQUEST_LIMIT)
+    return `request cap (${contextRequests})`;
+  if (contextCreatedAt > 0 && Date.now() - contextCreatedAt >= CONTEXT_TTL_MS)
+    return "session TTL";
   return null;
 }
 
@@ -203,12 +244,12 @@ function rotationReason(): string | null {
  */
 export function rotateBrowserSession(): void {
   if (Date.now() - lastRotationAt >= MIN_ROTATION_GAP_MS) {
-    rotateContext('forced (HTTP blocked)');
+    rotateContext("forced (HTTP blocked)");
   }
 }
 
 /** Drop the running browser + pool; the next fetch relaunches fresh. */
-function resetBrowser(reason = 'reset'): void {
+function resetBrowser(reason = "reset"): void {
   pool = [];
   if (idleTimer) {
     clearTimeout(idleTimer);
@@ -221,7 +262,9 @@ function resetBrowser(reason = 'reset'): void {
   contextBlocked = false;
   contextCreatedAt = 0;
   lastActivityAt = Date.now();
-  console.info(`[crawler] browser closed (${reason}); will relaunch on next fetch`);
+  console.info(
+    `[crawler] browser closed (${reason}); will relaunch on next fetch`,
+  );
   void (async () => {
     if (!bp) return;
     try {
@@ -232,7 +275,7 @@ function resetBrowser(reason = 'reset'): void {
 }
 
 export async function closeBrowser(): Promise<void> {
-  resetBrowser('explicit close');
+  resetBrowser("explicit close");
 }
 
 // ─── Idle shutdown ───────────────────────────────────────────────────────
@@ -254,7 +297,10 @@ function recheckIdle(): void {
     resetBrowser();
     return;
   }
-  idleTimer = setTimeout(recheckIdle, crawlerConfig.browserIdleTimeoutMs - idleMs);
+  idleTimer = setTimeout(
+    recheckIdle,
+    crawlerConfig.browserIdleTimeoutMs - idleMs,
+  );
   idleTimer.unref?.();
 }
 
@@ -295,8 +341,8 @@ async function acquirePage(): Promise<Page> {
       // Flag the session if Letterboxd blocks a request in this context so
       // we rotate to a fresh identity instead of letting one flagged session
       // cascade into every later request.
-      page.on('response', (resp) => {
-        if (resp.status() === 403 && resp.url().includes('letterboxd.com')) {
+      page.on("response", (resp) => {
+        if (resp.status() === 403 && resp.url().includes("letterboxd.com")) {
           contextBlocked = true;
         }
       });
@@ -304,7 +350,7 @@ async function acquirePage(): Promise<Page> {
       return page;
     }
     if (Date.now() >= deadline) {
-      throw new Error('browser tab pool busy (all open tabs in use)');
+      throw new Error("browser tab pool busy (all open tabs in use)");
     }
     await sleep(60);
   }
@@ -317,6 +363,14 @@ function releasePage(page: Page): void {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Max time (ms) to let a Cloudflare challenge solve itself in the live tab
+ * before the session is declared blocked. The challenge JS runs in the real
+ * browser and normally clears within a few seconds; 30s is generous enough
+ * for a slow Turnstile while still bounding the damage of an IP-level block.
+ */
+const CHALLENGE_WAIT_MS = 60000;
 
 /**
  * Trigger Letterboxd's lazy-loaded posters (LazyPoster) and wait for a real
@@ -333,7 +387,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitForPosters(page: Page): Promise<void> {
   // Nothing to wait for if the page has no poster images.
   const hasPosters = await page.evaluate(
-    () => document.querySelectorAll('img.image, img.poster').length > 0,
+    () => document.querySelectorAll("img.image, img.poster").length > 0,
   );
   if (!hasPosters) return;
 
@@ -346,7 +400,11 @@ async function waitForPosters(page: Page): Promise<void> {
     const step = window.innerHeight;
     const maxSteps = 40;
     let steps = 0;
-    for (let y = 0; y < document.body.scrollHeight && steps < maxSteps; y += step, steps++) {
+    for (
+      let y = 0;
+      y < document.body.scrollHeight && steps < maxSteps;
+      y += step, steps++
+    ) {
       window.scrollTo(0, y);
       await new Promise((r) => setTimeout(r, stepDelay));
     }
@@ -358,15 +416,71 @@ async function waitForPosters(page: Page): Promise<void> {
   const deadline = Date.now() + crawlerConfig.posterWaitMs;
   while (Date.now() < deadline) {
     const loaded = await page.evaluate(() => {
-      const imgs = Array.from(document.querySelectorAll('img.image, img.poster'));
+      const imgs = Array.from(
+        document.querySelectorAll("img.image, img.poster"),
+      );
       return imgs.some((img) => {
-        const src = img.getAttribute('src') ?? img.getAttribute('data-src') ?? '';
-        return src && !src.includes('/static/img/empty-poster');
+        const src =
+          img.getAttribute("src") ?? img.getAttribute("data-src") ?? "";
+        return src && !src.includes("/static/img/empty-poster");
       });
     });
     if (loaded) break;
     await sleep(150);
   }
+}
+
+/**
+ * True while the tab shows a Cloudflare interstitial. Be specific: real
+ * Letterboxd pages embed /cdn-cgi/challenge-platform/... scripts (Cloudflare
+ * injects those into EVERY proxied page), so the ONLY reliable signs are the
+ * challenge's own copy ("Just a moment" title, "checking your browser").
+ */
+function isChallengeHtml(html: string): boolean {
+  return (
+    /<title[^>]*>\s*just a moment/i.test(html) ||
+    /checking your browser before accessing|cf-challenge-running/i.test(html)
+  );
+}
+
+/**
+ * A challenge page is loaded and its Cloudflare JS is running in this tab, so
+ * hold the page (no navigation) and give it up to CHALLENGE_WAIT_MS to solve
+ * itself — CF clears the cookie and reloads into the real page. Returns that
+ * real HTML once the challenge is gone, or null if it never cleared (caller
+ * then treats the session as blocked, as before).
+ */
+async function solveChallenge(
+  page: Page,
+  waitForPoster: boolean,
+): Promise<string | null> {
+  console.warn(
+    `[crawler] challenge page detected — waiting up to ${CHALLENGE_WAIT_MS / 1000}s for it to solve`,
+  );
+  const deadline = Date.now() + CHALLENGE_WAIT_MS;
+  while (Date.now() < deadline) {
+    await sleep(1000);
+    if (page.isClosed()) return null;
+    let html = "";
+    try {
+      html = await page.content();
+    } catch {
+      // Mid-navigation (the challenge's solved reload) — look again next tick.
+      continue;
+    }
+    if (html && !isChallengeHtml(html)) {
+      if (waitForPoster) await waitForPosters(page);
+      // This session just proved itself, so don't rotate it away from the
+      // cf_clearance cookie it earned (the response listener flags 403s).
+      contextBlocked = false;
+      console.info(
+        "[crawler] challenge solved — continuing with the real page",
+      );
+      return html;
+    }
+  }
+  console.warn("[crawler] challenge did not clear within the wait window");
+  return null;
 }
 
 /**
@@ -398,7 +512,10 @@ export async function fetchHtmlStealth(
     const { html, retry } = await attemptFetch(url, opts);
     if (!retry) return html;
     if (++attempt >= 2) {
-      console.warn('[crawler] browser kept serving a block/challenge page:', url);
+      console.warn(
+        "[crawler] browser kept serving a block/challenge page:",
+        url,
+      );
       return null;
     }
     rotateBrowserSession();
@@ -424,7 +541,7 @@ async function attemptFetch(
       page = await acquirePage();
     }
     const resp = await page.goto(url, {
-      waitUntil: 'domcontentloaded',
+      waitUntil: "domcontentloaded",
       timeout: crawlerConfig.timeoutMs,
     });
     // Letterboxd is behind Cloudflare: after a burst of requests the next
@@ -434,6 +551,11 @@ async function attemptFetch(
     // as a block: the caller retries once with a rotated session, and the
     // session flag rotates it again before any later fetch.
     if (resp?.status() === 403) {
+      // A 403 is usually the "Just a moment" interstitial, which Cloudflare's
+      // own JS can still solve in this tab — wait it out before giving up on
+      // the session (a solved page just continues the crawl).
+      const solved = await solveChallenge(page, opts.waitForPosters !== false);
+      if (solved) return { html: solved, retry: false };
       contextBlocked = true;
       return { html: null, retry: true };
     }
@@ -447,15 +569,12 @@ async function attemptFetch(
     // Small human-like pause.
     await sleep(200 + Math.random() * 300);
     const html = await page.content();
-    // A 200-status challenge page also exists. Real Letterboxd pages embed
-    // /cdn-cgi/challenge-platform/... scripts (Cloudflare injects those into
-    // EVERY proxied page), so the ONLY reliable signs are HTTP 403 or the
-    // challenge's own copy ("Just a moment" title, "checking your browser").
-    if (
-      resp?.status() === 403 ||
-      /<title[^>]*>\s*just a moment/i.test(html) ||
-      /checking your browser before accessing|cf-challenge-running/i.test(html)
-    ) {
+    // A 200-status challenge page also exists. Same wait-then-give-up deal:
+    // the challenge JS is live in this tab, so let it finish and use the real
+    // page it lands on, otherwise flag the session for rotation.
+    if (isChallengeHtml(html)) {
+      const solved = await solveChallenge(page, opts.waitForPosters !== false);
+      if (solved) return { html: solved, retry: false };
       contextBlocked = true;
       return { html: null, retry: true };
     }
@@ -470,12 +589,18 @@ async function attemptFetch(
         const b = await browserPromise;
         if (!b.isConnected()) {
           resetBrowser();
-          console.warn('[crawler] background browser died; will relaunch on next fetch:', msg);
+          console.warn(
+            "[crawler] background browser died; will relaunch on next fetch:",
+            msg,
+          );
           return { html: null, retry: false };
         }
       } catch {
         resetBrowser();
-        console.warn('[crawler] background browser gone; will relaunch on next fetch:', msg);
+        console.warn(
+          "[crawler] background browser gone; will relaunch on next fetch:",
+          msg,
+        );
         return { html: null, retry: false };
       }
     }
@@ -484,17 +609,20 @@ async function attemptFetch(
     // this tab. Film pages ship their poster (og:image) + average rating in
     // the initial server-rendered HTML, so a stalled page still yields them.
     if (page && !page.isClosed()) {
-      let partial = '';
+      let partial = "";
       try {
         partial = await page.content();
       } catch {}
       await page.close().catch(() => {});
       if (partial.trim()) {
-        console.warn('[crawler] stealth navigation stalled; kept partial HTML:', msg);
+        console.warn(
+          "[crawler] stealth navigation stalled; kept partial HTML:",
+          msg,
+        );
         return { html: partial, retry: false };
       }
     }
-    console.warn('[crawler] stealth browser fetch failed:', msg);
+    console.warn("[crawler] stealth browser fetch failed:", msg);
     return { html: null, retry: false };
   } finally {
     // Return the tab to the pool — never close it; the next fetch reuses it.

@@ -53,8 +53,8 @@ ENV NODE_ENV=production \
     # Stealth-browser crawling by default (Chromium ships in the image).
     # Set to `http` for HTTP-only (lightweight) or `browser` to force it.
     CRAWLER_MODE=auto \
-    # Polite rate limit: max requests per sliding window (default 2 per 10s).
-    CRAWLER_RATE_MAX=2 \
+    # Polite rate limit: max requests per sliding window (default 6 per 10s).
+    CRAWLER_RATE_MAX=6 \
     CRAWLER_RATE_WINDOW_MS=10000 \
     # Browser-fingerprint identity: UA + Client Hints + TLS profile all use
     # this impersonation target (chrome131 ships with curl-impersonate v2.2).
@@ -63,21 +63,37 @@ ENV NODE_ENV=production \
     CRAWLER_TLS_IMPERSONATION=auto \
     # Ephemeral, writable cache (the repo .cache is not present here).
     CACHE_DIR=/tmp/friendboxd-cache \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    # Where the captcha-solver extension is unpacked (see the INSTALL_BROWSER
+    # step below). browser.ts only passes Chromium the --load-extension flags
+    # when this directory actually contains an unpacked extension.
+    EXTENSION_DIR=/tmp/ext
 
 # Copy the minimal standalone server + static assets.
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
-
+COPY --from=builder /app/solver.crx ./
 # Install Chromium for the stealth-browser crawl fallback (default ON).
 # Set INSTALL_BROWSER=0 for the lightweight HTTP-only image.
 # Playwright is installed fresh here because the standalone traced
 # node_modules doesn't expose the npx CLI correctly.
 ARG INSTALL_BROWSER=1
+# A .crx is NOT a plain zip: Chrome glues a CRX3 header in front of the zip
+# stream — "Cr24" magic (4) + version (4) + uint32 header length (4), so the
+# real archive starts at 12 + headerLength. unzip recovers from the junk prefix
+# but exits 1 when it does, which would abort this && chain. Trim the header
+# first so unzip exits 0.
 RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
+      apt-get update && \
+      apt-get install -y --no-install-recommends unzip && \
+      crx_zip_start=$((12 + $(od -An -tu4 -j8 -N4 solver.crx | tr -d ' '))) && \
+      tail -c +$((crx_zip_start + 1)) solver.crx > /tmp/solver.zip && \
+      mkdir -p "$EXTENSION_DIR" && \
+      unzip -q /tmp/solver.zip -d "$EXTENSION_DIR" && \
+      rm -f /tmp/solver.zip solver.crx && \
       npm install --no-save playwright && \
       npx playwright install --with-deps chromium && \
-      chmod -R a+rX /ms-playwright; \
+      chmod -R a+rX /ms-playwright "$EXTENSION_DIR"; \
     fi
 
 # Bundle curl-impersonate (default ON): a patched curl whose TLS ClientHello

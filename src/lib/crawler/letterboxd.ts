@@ -8,6 +8,7 @@ import type { AnyNode } from 'domhandler';
 import { crawlerConfig } from '@/lib/config';
 import { fetchHtml, HttpFetchError } from './http';
 import { fetchHtmlStealth, rotateBrowserSession } from './browser';
+import { captchaEnabled, closeCaptchaBrowser, fetchHtmlWithCaptcha } from './captcha-browser';
 import { rateLimiter } from './rate-limiter';
 import { setCrawlPhase, setCrawlUser, setCrawlFilm } from '@/lib/crawl-status';
 import { genreSlug } from '@/lib/utils/genres';
@@ -55,6 +56,25 @@ export class PrivateProfileError extends Error {
 
 // ─── HTML fetching with stealth fallback ────────────────────────────────
 
+/**
+ * Run a URL through the captcha-solver browser (when enabled), falling back to
+ * the plain stealth browser if it can't deliver. The solver browser is the
+ * only strategy that can beat an image challenge, but it's slower and holds a
+ * second Chromium open, so it goes first only when explicitly enabled and the
+ * proven stealth path still handles everything else.
+ */
+async function fetchViaBrowser(
+  url: string,
+  opts: { waitForPosters?: boolean } = {},
+): Promise<string | null> {
+  if (captchaEnabled) {
+    const html = await fetchHtmlWithCaptcha(url, opts);
+    if (html) return html;
+    console.warn('[crawler] captcha browser gave up; falling back to stealth');
+  }
+  return fetchHtmlStealth(url, opts);
+}
+
 async function getHtml(
   url: string,
   referer?: string,
@@ -66,7 +86,7 @@ async function getHtml(
   await rateLimiter.acquire();
   const mode = crawlerConfig.mode;
   if (mode === 'browser') {
-    const html = await fetchHtmlStealth(url, opts);
+    const html = await fetchViaBrowser(url, opts);
     if (html) return html;
     // The browser served a block/challenge (or is unavailable) — expose it
     // like the HTTP strategy does so the caller can degrade gracefully
@@ -84,12 +104,12 @@ async function getHtml(
     // identity first, then let the browser try.
     if (err instanceof HttpFetchError && err.status === 403) {
       rotateBrowserSession();
-      const html = await fetchHtmlStealth(url, opts);
+      const html = await fetchViaBrowser(url, opts);
       if (html) return html;
       throw err;
     }
     // auto → try stealth browser as fallback.
-    const html = await fetchHtmlStealth(url, opts);
+    const html = await fetchViaBrowser(url, opts);
     if (html) return html;
     throw err;
   }
