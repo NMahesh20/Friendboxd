@@ -279,3 +279,4 @@ Tagging scheme:
 ---
 ## Extra resource
 Uses the following extension https://captchaplugin.com/en/index.php Really cool extension. Download link: `https://clients2.google.com/service/update2/crx?response=redirect&prod=chromium&prodversion=143.0.7499.41&acceptformat=crx3&x=id%3Dijmhjekchmipnifjiahkapifokdffffo%26installsource%3Dondemand%26uc`
+But the site still detectes it as its a automation spanned browser.

@@ -124,10 +124,12 @@ export const crawlerConfig: CrawlerConfig = {
   // hosts that actually see image challenges. Set CRAWLER_CAPTCHA_SOLVER=0 to
   // force it off even where the extension is present.
   captchaSolver: process.env.CRAWLER_CAPTCHA_SOLVER === "1",
-  // A solve grinds through several rounds of tile swapping; measured 65-142s
-  // against Google's demo, so budget generously. Past this the strategy gives
-  // up and the caller falls back to the plain stealth browser.
-  captchaWaitMs: int(process.env.CRAWLER_CAPTCHA_WAIT_MS, 80000),
+  // Challenge-page budget: when a challenge is detected, stay on the page for
+  // this long (default 10s) letting the solver extension work. If it still
+  // reads as a challenge when the window runs out, the strategy gives up and
+  // the caller tries the other way (fallback to the plain stealth browser /
+  // rotated session). Clears earlier and the page is kept.
+  captchaWaitMs: int(process.env.CRAWLER_CAPTCHA_WAIT_MS, 20000),
   captchaProfileDir:
     process.env.CRAWLER_CAPTCHA_PROFILE_DIR ||
     "/tmp/friendboxd-captcha-profile",

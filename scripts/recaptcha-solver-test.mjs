@@ -85,7 +85,12 @@ const args = [
   "--headless=new",
   "--use-gl=angle",
   "--use-angle=gl",
-  "--disable-features=IsolateOrigins,site-per-process",
+  "--disable-features=IsolateOrigins,site-per-process,ExtensionDebuggerStrictPolicyRestrictions,DisableLoadExtensionCommandLineSwitch",
+  // Same as getContext() in captcha-browser.ts: let the unpacked extension
+  // load via --load-extension, attach chrome.debugger without the strict
+  // host-permission policy, and unlock the debugger API in headless.
+  "--enable-unsafe-extension-debugging",
+  "--disable-restore-session-state",
   "--window-size=1366,900",
   "--lang=en-US",
   "--no-first-run",

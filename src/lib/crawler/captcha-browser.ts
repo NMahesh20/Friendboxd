@@ -100,8 +100,28 @@ async function getContext(): Promise<BrowserContext> {
           "--use-gl=angle",
           "--use-angle=gl",
           "--window-size=1366,900",
+          "--lang=en-US",
           "--no-first-run",
           "--no-default-browser-check",
+          "--disable-restore-session-state",
+          // The extension needs its chrome.debugger permission to attach to
+          // whatever page the crawler sends it. Chromium's
+          // ExtensionDebuggerStrictPolicyRestrictions feature blocks that for
+          // targets the extension has no host permission on, and
+          // DisableLoadExtensionCommandLineSwitch makes Chromium ignore
+          // --load-extension; disable both so the unpacked solver loads and
+          // its "Access the page debugger backend" works on any host.
+          // --enable-unsafe-extension-debugging additionally unlocks the
+          // debugger API for extensions in non-default (headless) setups.
+          // Only ever applied under CRAWLER_CAPTCHA_SOLVER=1 — this launch
+          // path exists solely for the solver (see captchaEnabled above).
+          "--enable-unsafe-extension-debugging",
+          "--disable-features=ExtensionDebuggerStrictPolicyRestrictions,DisableLoadExtensionCommandLineSwitch",
+          // Both extension switches matter, and --disable-extensions-except is
+          // required here even though it is discouraged for CDP-loaded
+          // extensions: under Playwright's launchPersistentContext the unpacked
+          // extension only registers a target when it is in this allow-list
+          // (measured: ext target present with it, absent without it).
           `--disable-extensions-except=${EXTENSION_DIR}`,
           `--load-extension=${EXTENSION_DIR}`,
         ],
@@ -164,8 +184,14 @@ function isChallengeHtml(html: string): boolean {
 
 /**
  * Poll the tab until the challenge is gone, then return the real page HTML.
- * Returns null if the wait window runs out, and the caller then falls back to
- * the plain stealth browser.
+ * Returns null if the stay window runs out and the caller then tries the
+ * other way — closing this browser and falling back to the plain stealth
+ * browser (or a rotated session).
+ *
+ * The rule: STAY on the page for the wait window (CRAWLER_CAPTCHA_WAIT_MS,
+ * default 10s), polling every 2s. The moment the document stops reading as a
+ * challenge we CONTINUE with the real page. If it still reads as a challenge
+ * when the window runs out, we give up so the other path gets its turn.
  *
  * Purely observational: nothing is clicked, focused or key-pressed, so nothing
  * here can be a synthetic-input signal. The extension is left to do its work
@@ -186,9 +212,9 @@ async function solveChallenge(page: Page): Promise<string | null> {
   page.on("framenavigated", countReload);
 
   console.warn(
-    `[crawler] challenge detected — watching for up to ${Math.round(
+    `[crawler] challenge detected — staying on it up to ${Math.round(
       crawlerConfig.captchaWaitMs / 1000,
-    )}s without touching the page`,
+    )}s without touching the page; cleared → continue, still a challenge → try the other way`,
   );
 
   const deadline = Date.now() + crawlerConfig.captchaWaitMs;
@@ -214,7 +240,9 @@ async function solveChallenge(page: Page): Promise<string | null> {
       return html;
     }
     console.warn(
-      "[crawler] challenge did not clear within the wait window; falling back to stealth browser",
+      `[crawler] still the challenge page after the ${Math.round(
+        crawlerConfig.captchaWaitMs / 1000,
+      )}s stay — trying the other way (stealth browser)`,
     );
     return null;
   } finally {
